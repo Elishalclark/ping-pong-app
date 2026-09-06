@@ -25,6 +25,10 @@ export class VisionReferee {
     this.showDebug = true;
     this.fps = 0;
     this.facing = 'environment';
+    this.bg = null;             // running background; the phone is stationary
+    this.outMargin = 0.35;      // out-of-bounds line, as a fraction of table size
+    this.onBallOut = () => {};
+    this._wasInside = true;
     this.pending = null;        // corners being placed during calibration
     this.procWidth = 192;       // adapts down on a phone that can't keep up
     this.onBallBounce = () => {};   // visual bounce (vertical direction reversal)
@@ -140,35 +144,49 @@ export class VisionReferee {
     for (let i = 0, p = 0; i < n; i++, p += 4) {
       grey[i] = (d[p] * 77 + d[p + 1] * 151 + d[p + 2] * 28) >> 8;
     }
-    if (!this.prev || this.prev.length !== n) { this.prev = grey; return null; }
+    if (!this.prev || this.prev.length !== n) { this.prev = grey; this.bg = null; return null; }
+    if (!this.bg || this.bg.length !== n) { this.bg = Float32Array.from(grey); return null; }
 
     // Where do we expect the ball? Prediction tightens the search and stops a
-    // waving arm from stealing the track.
-    let px = -1, py = -1;
-    if (this.track && t - this.track.t < 120) {
-      const dt = (t - this.track.t) / 1000;
-      px = (this.track.x + this.track.vx * dt) * w;
-      py = (this.track.y + this.track.vy * dt) * h;
+    // waving arm from stealing the track. The window widens the longer the
+    // ball has been missing, so a brief occlusion doesn't lose it for good.
+    let px = -1, py = -1, searchR = 1e9;
+    if (this.track) {
+      const age = t - this.track.t;
+      if (age < 400) {
+        const dt = age / 1000;
+        px = (this.track.x + this.track.vx * dt) * w;
+        py = (this.track.y + this.track.vy * dt) * h;
+        const speed = Math.hypot(this.track.vx * w, this.track.vy * h);
+        searchR = Math.max(20, speed * 0.09 + 16) * (1 + age / 150);
+      }
     }
-    const searchR = px >= 0 ? Math.max(18, Math.hypot(this.track.vx * w, this.track.vy * h) * 0.09 + 16) : 1e9;
 
     const thr = this.motionThreshold;
-    let best = null;
     const pts = [];
     for (let y = 1; y < h - 1; y++) {
       for (let x = 1; x < w - 1; x++) {
         const i = y * w + x;
-        const diff = Math.abs(grey[i] - this.prev[i]);
-        if (diff < thr) continue;
+        const g = grey[i];
+        // Against a mostly static scene, the ball stands out from the learned
+        // background far more reliably than from the previous frame alone:
+        // frame differencing leaves a ghost where the ball WAS as well as
+        // where it is, and loses the ball entirely whenever it slows down.
+        const fromBg = g - this.bg[i];
+        if (fromBg < thr) continue;
+        const moving = Math.abs(g - this.prev[i]);
+        if (moving < thr * 0.4) continue;   // a static bright object isn't the ball
         if (px >= 0 && Math.hypot(x - px, y - py) > searchR) continue;
-        // Bright pixels only: the ball is white or orange, brighter than most
-        // of what moves behind it.
-        const bright = grey[i];
-        if (bright < 90) continue;
-        pts.push({ x, y, s: diff * (bright / 255) });
+        if (g < 90) continue;               // the ball is white or orange, and bright
+        pts.push({ x, y, s: fromBg * (g / 255) });
       }
     }
     this.prev = grey;
+
+    // Learn the background slowly, and not at all where the ball might be:
+    // baking the ball into the background is what makes a tracker go blind
+    // when a rally settles into a rhythm.
+    for (let i = 0; i < n; i++) this.bg[i] += (grey[i] - this.bg[i]) * 0.02;
     if (!pts.length) return null;
 
     // Cluster greedily; a ball at this scale is only a few pixels across, so
@@ -176,15 +194,25 @@ export class VisionReferee {
     const clusters = [];
     for (const p of pts) {
       let c = clusters.find(c => Math.abs(c.cx - p.x) < 6 && Math.abs(c.cy - p.y) < 6);
-      if (!c) { c = { sx: 0, sy: 0, sw: 0, n: 0, cx: p.x, cy: p.y }; clusters.push(c); }
+      if (!c) { c = { sx: 0, sy: 0, sw: 0, n: 0, cx: p.x, cy: p.y, x0: p.x, x1: p.x, y0: p.y, y1: p.y }; clusters.push(c); }
       c.sx += p.x * p.s; c.sy += p.y * p.s; c.sw += p.s; c.n++;
       c.cx = c.sx / c.sw; c.cy = c.sy / c.sw;
+      if (p.x < c.x0) c.x0 = p.x; if (p.x > c.x1) c.x1 = p.x;
+      if (p.y < c.y0) c.y0 = p.y; if (p.y > c.y1) c.y1 = p.y;
       if (clusters.length > 220) break;
     }
+
+    let best = null;
     for (const c of clusters) {
       if (c.n > 90 || c.n < 2) continue;
-      const compact = 1 / (1 + c.n / 30);
-      let score = (c.sw / c.n) * compact;
+      const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1;
+      // A ball is roughly round. A fast one smears into a short streak, but
+      // an arm or a shirt edge is far longer in one direction than the other.
+      const elongation = Math.max(bw, bh) / Math.min(bw, bh);
+      if (elongation > 4) continue;
+      const fill = c.n / (bw * bh);          // a blob, not a scattered edge
+      if (fill < 0.3) continue;
+      let score = (c.sw / c.n) * (1 / (1 + c.n / 30)) * fill;
       if (px >= 0) score *= 1 / (1 + Math.hypot(c.cx - px, c.cy - py) / 25);
       if (!best || score > best.score) best = { x: c.cx / w, y: c.cy / h, score, n: c.n };
     }
@@ -214,9 +242,26 @@ export class VisionReferee {
       }
     }
     this.track = { x: found.x, y: found.y, vx, vy, t, conf: found.conf };
+    this._checkBoundary(found, t);
     this._lastSeen = t;
     this.trail.push({ x: found.x, y: found.y, t });
     if (this.trail.length > 40) this.trail.shift();
+  }
+
+  /**
+   * Fire once when the ball crosses the out-of-bounds line outward. The
+   * outward test matters: a ball travelling towards the table from behind a
+   * player is a stroke being played, not a ball leaving the court.
+   */
+  _checkBoundary(p, t) {
+    if (!this.table) return;
+    if (this.isInsideBoundary(p)) { this._wasInside = true; return; }
+    if (!this._wasInside) return;                     // already counted
+    const c = this.table.centre;
+    const outward = (p.x - c.x) * this.track.vx + (p.y - c.y) * this.track.vy;
+    if (outward <= 0) return;                         // heading back towards the table
+    this._wasInside = false;
+    this.onBallOut({ x: p.x, y: p.y, t, speed: Math.hypot(this.track.vx, this.track.vy) });
   }
 
   /** Ball position at (or nearest to) a moment in time — used to place a sound. */
@@ -240,8 +285,33 @@ export class VisionReferee {
   setTable(corners) {
     const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
     const net = [mid(corners[1], corners[2]), mid(corners[0], corners[3])];
-    this.table = { corners: corners.map(c => ({ ...c })), net, sideOfA: sign(cross(net[0], net[1], corners[0])) };
+    const centre = corners.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
+    this.table = {
+      corners: corners.map(c => ({ ...c })),
+      net, centre,
+      sideOfA: sign(cross(net[0], net[1], corners[0])),
+      boundary: expand(corners, centre, 1 + this.outMargin),
+    };
     return this.table;
+  }
+
+  /** Move the out-of-bounds line in or out; 0 puts it on the table edge. */
+  setOutMargin(m) {
+    this.outMargin = m;
+    if (this.table) this.table.boundary = expand(this.table.corners, this.table.centre, 1 + m);
+  }
+
+  /**
+   * Is the ball still in play, positionally? Note this is NOT the table
+   * outline: players legitimately strike the ball from well behind the end
+   * line, so the ball being off the table means nothing on its own. The
+   * boundary sits out beyond the table, at the point where the ball can no
+   * longer be coming back.
+   */
+  isInsideBoundary(p) {
+    if (!this.table) return true;
+    const b = this.table.boundary;
+    return inTriangle(p, b[0], b[1], b[2]) || inTriangle(p, b[0], b[2], b[3]);
   }
 
   isOnTable(p) {
@@ -286,6 +356,18 @@ export class VisionReferee {
     }
 
     if (this.table) {
+      // The out-of-bounds line, drawn first so the table sits on top of it.
+      const b = this.table.boundary;
+      ctx.strokeStyle = 'rgba(248,81,73,.75)'; ctx.lineWidth = 2;
+      ctx.setLineDash([10, 7]);
+      ctx.beginPath();
+      b.forEach((p, i) => (i ? ctx.lineTo(p.x * W, p.y * H) : ctx.moveTo(p.x * W, p.y * H)));
+      ctx.closePath(); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(248,81,73,.85)';
+      ctx.font = '600 13px system-ui';
+      ctx.fillText('OUT', b[1].x * W + 4, b[1].y * H - 6);
+
       const c = this.table.corners;
       ctx.strokeStyle = 'rgba(74,163,255,.9)'; ctx.lineWidth = 2;
       ctx.beginPath();
@@ -318,6 +400,11 @@ export class VisionReferee {
 }
 
 // --- small geometry helpers ---------------------------------------------
+/** Scale a polygon outward from a point. */
+function expand(pts, centre, k) {
+  return pts.map(p => ({ x: centre.x + (p.x - centre.x) * k, y: centre.y + (p.y - centre.y) * k }));
+}
+
 const cross = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 const sign = v => (v >= 0 ? 1 : -1);
 

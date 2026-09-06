@@ -150,6 +150,11 @@ export class RulesEngine {
       // Two bounces on the receiver's half — they failed to return it.
       return this._point(r.lastHitter, 'failed to return the ball', ev.confidence);
     }
+    if (!r.lastHitter) {
+      // Bounces heard before any stroke was: the microphone caught the ball
+      // on the table but missed the racket. Nothing can be attributed.
+      return [{ type: 'info', reason: `bounce, ${side} half — no stroke heard yet`, confidence: 0 }];
+    }
     return [{ type: 'info', reason: `bounce, ${side} half`, confidence: ev.confidence }];
   }
 
@@ -168,6 +173,14 @@ export class RulesEngine {
     if (!r.lastHitter) return [];
     if (this.phase === 'serve' && r.strokes === 1 && r.netTouched && r.serveBounces.length < 2) {
       return this._point(other(this.server), 'service into the net', ev.confidence);
+    }
+    // Who a ball leaving play belongs to depends entirely on whether it had
+    // already landed. If it bounced on the far half first, the striker did
+    // everything asked of them and it is the receiver who let it go by;
+    // only a ball that never landed is the striker's mistake.
+    const landed = r.bouncesSinceHit.length > 0 && r.bouncesSinceHit[0] !== r.lastHitter;
+    if (landed) {
+      return this._point(r.lastHitter, 'ball went past without a return', ev.confidence);
     }
     return this._point(other(r.lastHitter), 'ball out of play', ev.confidence);
   }
@@ -189,6 +202,14 @@ export class RulesEngine {
   }
 
   _point(side, reason, confidence = 1) {
+    // Never score for nobody. If a call cannot be attributed to a player, the
+    // honest outcome is no call — silently incrementing an undefined side
+    // corrupts the match and shows the umpire "Point null".
+    if (side !== SIDE.A && side !== SIDE.B) {
+      this.phase = 'awaiting-serve';
+      this.rally = null;
+      return [{ type: 'info', reason: `${reason}, but it could not be attributed — no call`, confidence: 0 }];
+    }
     this.history.push({
       kind: 'point', side, reason,
       score: { ...this.score }, games: { ...this.games }, server: this.server,

@@ -28,6 +28,7 @@ export class Referee {
 
     this.audio.onOnset = o => this.handleOnset(o);
     this.vision.onLost = last => this.handleLost(last);
+    this.vision.onBallOut = info => this.handleBallOut(info);
     this._tick = setInterval(() => this._housekeeping(), 120);
   }
 
@@ -68,6 +69,14 @@ export class Referee {
       return;
     }
 
+    if (!this.vision.isInsideBoundary(pos)) {
+      // A noise from the ball out beyond the boundary is it hitting the floor
+      // or a wall — never a stroke, since nobody plays from out there.
+      this._pendingOut = null;
+      this._emit({ type: 'out', t: o.wallTime, confidence });
+      return;
+    }
+
     if (!onTable || o.contact === CONTACT.PADDLE) {
       // Contact off the surface is a stroke; the half the ball is over tells
       // us who played it.
@@ -75,6 +84,18 @@ export class Referee {
       this._lastContactSide = side;
       this._emit({ type: 'hit', side, t: o.wallTime, confidence: round2(confidence * 0.9) });
     }
+  }
+
+  /**
+   * The tracker watched the ball cross the out-of-bounds line and keep going.
+   * This is a far better signal than waiting for the ball to disappear: it is
+   * immediate, and it says the ball actually left rather than that the
+   * tracker gave up.
+   */
+  handleBallOut(info) {
+    if (!this.active || !this.engine.rally) return;
+    this._pendingOut = null;
+    this._emit({ type: 'out', t: info.t, confidence: 0.8 });
   }
 
   handleLost(last) {

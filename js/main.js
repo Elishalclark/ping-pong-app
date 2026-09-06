@@ -365,6 +365,7 @@ $('wakeLock').addEventListener('change', e => (e.target.checked ? requestWakeLoc
 bind('onsetSens', v => { audio.applySettings({ sensitivity: +v }); return v; });
 bind('noiseGate', v => { audio.applySettings({ gateDb: +v }); return `${v} dB`; });
 bind('motionThresh', v => { vision.motionThreshold = +v; return v; });
+bind('outMargin', v => { vision.setOutMargin(+v / 100); return `${v}%`; });
 bind('syncWin', v => { if (referee) referee.syncWindow = +v; return `${v} ms`; });
 
 function bind(id, fn) {

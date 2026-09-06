@@ -100,11 +100,16 @@ The two sensors answer different questions, and neither is trusted alone.
   short click; a racket is lower and rings longer; a net touch is quiet and
   dull. Browsers too old for AudioWorklet (iOS before 14.5) fall back to a
   ScriptProcessor running the same detector with looser timing.
-- **The camera answers *where*.** `js/vision.js` scores each pixel of a
-  downscaled frame by (frame difference × brightness) and takes the best small,
-  compact cluster, predicted forward from the previous two frames. The ball is
-  the smallest, brightest, fastest-moving thing in view, which is enough to
-  find it without a model or a library.
+- **The camera answers *where*.** `js/vision.js` learns a slow-moving
+  background of the scene — the phone is stationary, so most of the picture is
+  the same frame after frame — and scores each pixel of a downscaled frame by
+  how far it stands out from that background, weighted by brightness. It takes
+  the best small, round, compact cluster, predicted forward from the previous
+  two frames. Background subtraction beats simple frame differencing here for
+  two reasons: differencing leaves a ghost where the ball *was* as well as
+  where it is, and it loses the ball entirely whenever the ball slows down.
+  Blobs that are too long and thin, or too sparse, are rejected as arms and
+  shirt edges.
 - **`js/referee.js` fuses them.** When a transient arrives, it asks the tracker
   where the ball was at that instant. Inside the calibrated table quad, it's a
   bounce, and which side of the net line it fell on decides whose half. Outside
@@ -114,6 +119,30 @@ The two sensors answer different questions, and neither is trusted alone.
 - **`js/rules.js` is the rulebook**, a pure state machine with no knowledge of
   cameras or microphones, driven entirely by those physical events. It's the
   part that's fully covered by tests (`npm test`).
+
+## The out-of-bounds line
+
+The red dashed line around the table is the boundary. When the tracked ball
+crosses it **on the way out**, the ball is out of play and the point is
+decided.
+
+It deliberately sits *outside* the table rather than on its edge, and that
+distinction is the whole design:
+
+- **Off the table is not out.** Players strike the ball from well behind the
+  end line on nearly every rally, so a ball leaving the table outline means
+  nothing on its own.
+- **The direction matters.** Only a ball moving away from the table counts. A
+  ball crossing the line inward is a player winding up for a shot.
+- **Who it costs depends on what happened first.** If the ball had already
+  bounced legally on the far half, the striker did everything asked of them
+  and it is the receiver who let it go by. Only a ball that never landed is
+  the striker's mistake.
+
+Move the line with **Setup → Out-of-bounds line**: push it out if good shots
+are being called out, pull it in if balls sail away uncalled. A sound heard
+from beyond the line is treated as the ball hitting the floor, never as a
+stroke.
 
 ## What it gets right, and what it won't
 
@@ -126,6 +155,13 @@ Honest limits, because an umpire that hides them is worse than no umpire:
 - **Edge balls are the hardest call in the sport** and this app is not reliable
   on them. The side of the table and the top edge sound similar, and at the
   table's edge a couple of pixels decide in or out.
+- **The out-of-bounds line is a flat shape in a picture of a 3D room.** A ball
+  passing high above the table on its way out crosses the line at a different
+  image position than one skimming the surface. The line is a good practical
+  approximation, not a court boundary.
+- **A call that cannot be attributed is not made.** If the microphone hears
+  bounces but misses the stroke that started the rally, the app says so in the
+  log rather than guessing a player to award the point to.
 - **Frame rate bounds everything.** At 30 fps a smashed ball moves most of the
   table's length between frames, and the tracker will drop it. 60 fps in good
   light is a different app from 30 fps in a dim hall.

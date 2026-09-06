@@ -138,3 +138,53 @@ test('rulings stop once the match is over', () => {
   serve(e);
   assert.deepEqual(e.feed({ type: 'hit', side: 'A', confidence: 1 }), []);
 });
+
+test('a ball that never landed is the striker’s mistake', () => {
+  const e = engine(); serve(e);
+  rally(e,
+    { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' },
+    { type: 'hit', side: 'B' },
+    { type: 'out' });                        // B's return never touched the table
+  assert.deepEqual(e.score, { A: 1, B: 0 });
+});
+
+test('a ball that landed first and then went past is the receiver’s mistake', () => {
+  const e = engine(); serve(e);
+  rally(e,
+    { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' },
+    { type: 'hit', side: 'B' }, { type: 'bounce', side: 'A' },
+    { type: 'out' });                        // A never got a racket on it
+  assert.deepEqual(e.score, { A: 0, B: 1 });
+});
+
+test('a service that lands good and is then let go scores for the server', () => {
+  const e = engine(); serve(e);
+  rally(e,
+    { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' },
+    { type: 'out' });                        // receiver let a legal serve go by
+  assert.deepEqual(e.score, { A: 1, B: 0 });
+});
+
+test('bounces heard before any stroke do not award a phantom point', () => {
+  const e = engine(); serve(e);
+  // The microphone caught the ball on the table but missed the serve stroke.
+  const calls = rally(e, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' },
+    { type: 'bounce', side: 'B' });
+  assert.deepEqual(e.score, { A: 0, B: 0 }, 'nobody scores');
+  assert.equal(calls.some(c => c.type === 'point'), false);
+  assert.deepEqual(Object.keys(e.score).sort(), ['A', 'B'], 'no stray side is invented');
+});
+
+test('an unattributable ball out is no call rather than a wrong one', () => {
+  const e = engine(); serve(e);
+  const calls = rally(e, { type: 'out' });
+  assert.deepEqual(e.score, { A: 0, B: 0 });
+  assert.equal(calls.some(c => c.type === 'point'), false);
+});
+
+test('an award to an invalid side is refused', () => {
+  const e = engine();
+  const calls = e.award(undefined, 'bad call');
+  assert.equal(calls[0].type, 'info');
+  assert.deepEqual(e.score, { A: 0, B: 0 });
+});

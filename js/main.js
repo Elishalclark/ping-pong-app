@@ -207,6 +207,17 @@ $('btnStart').addEventListener('click', async () => {
   referee.onEvent = onEvent;
   audio.onLevel = onLevel;
 
+  // If the camera drops (some phones reclaim it when the app speaks), the
+  // tracker re-acquires it automatically; keep the player informed meanwhile.
+  vision.onCameraLost = () => {
+    els.cam.className = 'pill off';
+    say('Camera interrupted — bringing it back…', 'fault');
+  };
+  vision.onCameraBack = () => {
+    els.cam.className = 'pill on';
+    say('Camera back.', 'info');
+  };
+
   started = true;
   $('btnFlip').hidden = !(await vision.hasMultipleCameras());
   setInterval(() => (els.fps.textContent = `${vision.fps} fps`), 500);
@@ -405,6 +416,12 @@ function primeSpeech() {
 
 function announce(text) {
   if (!$('speak').checked || !window.speechSynthesis) return;
+  try {
+    _announce(text);
+  } catch { /* a speech failure must never interrupt the match */ }
+}
+
+function _announce(text) {
   const u = new SpeechSynthesisUtterance(text);
   u.rate = 1.02;
   u.pitch = 1;

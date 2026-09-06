@@ -79,7 +79,9 @@ no browser bars, and works with no signal at all.
    before that there is nothing for it to track, and showing it would just
    chase movement around the room. Keep the app in the foreground: a backgrounded phone stops
    the camera and microphone, and the app will tell you that play went
-   unjudged rather than pretend otherwise.
+   unjudged rather than pretend otherwise. If the picture ever goes black — a
+   few phones reclaim the camera when the app speaks a call — the tracker
+   re-acquires it automatically within a second, so you do not have to restart.
 
 Tune under *Detection settings* if calls are being missed or invented:
 

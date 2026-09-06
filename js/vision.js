@@ -46,6 +46,9 @@ export class VisionReferee {
     this.fps = 0;
     this.facing = 'environment';
     this.tracking = false;      // only hunt for the ball during an active match
+    this.onCameraLost = () => {};
+    this.onCameraBack = () => {};
+    this._recovering = false;
     this.bg = null;             // running background; the phone is stationary
     this.outMargin = 0.35;      // out-of-bounds line, as a fraction of table size
     this.onBallOut = () => {};
@@ -84,11 +87,65 @@ export class VisionReferee {
     }
     this.settings = this.stream.getVideoTracks()[0]?.getSettings?.() ?? {};
     if (this.settings.facingMode) this.facing = this.settings.facingMode;
-    this.video.srcObject = this.stream;
+    this._attachStream(this.stream);
     await this.video.play();
     this._running = true;
     requestAnimationFrame(this._loop);
     return this.stream;
+  }
+
+  /**
+   * Attach a stream and watch for it ending. On iOS in particular, speaking a
+   * call through the speech synthesiser can make the system reclaim an active
+   * capture session and end the camera track — the screen goes black and does
+   * not come back on its own. Re-acquiring the moment the track ends keeps the
+   * camera alive through a spoken point.
+   */
+  _attachStream(stream) {
+    this.video.srcObject = stream;
+    for (const track of stream.getVideoTracks()) {
+      track.addEventListener('ended', () => this._recover());
+    }
+    // A track that merely muted (a transient interruption) usually unmutes by
+    // itself; if it does not, the stall watchdog below re-acquires.
+  }
+
+  async _recover() {
+    if (!this._running || this._recovering) return;
+    this._recovering = true;
+    this.onCameraLost?.();
+    for (let attempt = 0; attempt < 5 && this._running; attempt++) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: this.facing } },
+        });
+        this.stream?.getTracks().forEach(t => t.stop());
+        this.stream = stream;
+        this.prev = null; this.bg = null;
+        this._attachStream(stream);
+        await this.video.play();
+        this._recovering = false;
+        this.onCameraBack?.();
+        return;
+      } catch {
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    this._recovering = false;
+  }
+
+  /**
+   * Watchdog: if the video stops delivering new frames for a while (a stall
+   * the 'ended' event didn't cover), force a re-acquire. Called from the frame
+   * loop, which already tracks the last time a real frame was drawn.
+   */
+  _watchdog(t) {
+    if (this._recovering) return;
+    // A backgrounded app pauses the video on purpose; that is not a stall.
+    if (typeof document !== 'undefined' && document.hidden) { this._okAt = t; return; }
+    if (this.video.readyState >= 2 && !this.video.paused) { this._okAt = t; return; }
+    if (!this._okAt) this._okAt = t;
+    if (t - this._okAt > 2500) { this._okAt = t; this._recover(); }
   }
 
   /** Is there more than one camera to switch between? */
@@ -109,7 +166,7 @@ export class VisionReferee {
     this.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: this.facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
     });
-    this.video.srcObject = this.stream;
+    this._attachStream(this.stream);
     await this.video.play();
     return this.facing;
   }
@@ -121,7 +178,8 @@ export class VisionReferee {
 
   _loop = () => {
     if (!this._running) return;
-    if (this.video.readyState >= 2) this._frame();
+    this._watchdog(performance.now());
+    if (this.video.readyState >= 2 && !this.video.paused) this._frame();
     requestAnimationFrame(this._loop);
   };
 

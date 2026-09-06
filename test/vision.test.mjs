@@ -299,6 +299,51 @@ test('scanning rejects a table-coloured background filling the frame', () => {
   assert.equal(v.scanTable(), null, 'a full-frame region is the background, not a table');
 });
 
+test('scanning finds a table under a brightness gradient across it', () => {
+  // Real tables are lit unevenly; the near edge is brighter than the far one.
+  // The shading must not split the table into "two colours".
+  const shade = (w, h) => {
+    const data = new Uint8ClampedArray(w * h * 4);
+    const inside = (x, y) => {
+      let hit = false;
+      for (let i = 0, j = 3; i < 4; j = i++) {
+        const [xi, yi] = TRUE_QUAD[i], [xj, yj] = TRUE_QUAD[j];
+        if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+      }
+      return hit;
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        if (inside(x / w, y / h)) {
+          const k = 0.55 + 0.45 * (y / h);
+          data[i] = 31 * k; data[i + 1] = 111 * k; data[i + 2] = 178 * k;
+        } else { data[i] = 107; data[i + 1] = 98; data[i + 2] = 87; }
+        data[i + 3] = 255;
+      }
+    }
+    return data;
+  };
+  const v = new VisionReferee({ videoWidth: 640, videoHeight: 480 }, stubCanvas());
+  v.proc = { width: 0, height: 0 };
+  v.pctx = { drawImage() {}, getImageData: (x, y, w, h) => ({ data: shade(w, h) }) };
+  assert.ok(v.scanTable(), 'a shaded table should still scan');
+});
+
+test('scanning finds a table that is neither blue nor green', () => {
+  // Some club tables are dark red or grey. The colour is sampled from the
+  // frame, not assumed, so these must work too.
+  for (const table of [[150, 40, 40], [90, 90, 96]]) {
+    const v = withScene({ quad: TRUE_QUAD, table, floor: [40, 60, 40] });
+    assert.ok(v.scanTable(), `table ${table} should scan`);
+  }
+});
+
+test('scanning works in dim light', () => {
+  const v = withScene({ quad: TRUE_QUAD, table: [10, 40, 66], floor: [22, 20, 18] });
+  assert.ok(v.scanTable(), 'a dim table should still scan');
+});
+
 test('a scanned table is placed, halves and boundary included', () => {
   const v = withScene({ quad: TRUE_QUAD });
   v.scanTable();

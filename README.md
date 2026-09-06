@@ -119,15 +119,18 @@ The two sensors answer different questions, and neither is trusted alone.
   short click; a racket is lower and rings longer; a net touch is quiet and
   dull. Browsers too old for AudioWorklet (iOS before 14.5) fall back to a
   ScriptProcessor running the same detector with looser timing.
-- **Scanning finds the table.** A competition table is the one large, strongly
-  coloured surface in a hall — blue or green in almost every venue — so the
-  scan takes the dominant table-coloured region of the frame, keeps its
-  largest connected part, and fits a quadrilateral to its extremes. It is
-  restricted to those hues on purpose: without that it settles on the floor,
-  which is usually the bigger area in the picture. A region that fills the
-  frame, or that doesn't fill the quad fitted to it, is rejected rather than
-  guessed at. The scan frame doubles as the tracker's reference picture of the
-  empty table.
+- **Scanning finds the table.** The table's colour is not assumed: you point
+  the phone at the table, so whatever colour fills the middle of the frame is
+  the table — under whatever lighting the hall has. The scan samples that
+  centre colour and grows the connected region of pixels like it, comparing by
+  chromaticity plus a loose brightness band so the shading across a real table
+  doesn't split it, then fits a quadrilateral to the region's extremes. It
+  grows from the centre so the table the phone is aimed at anchors the region
+  rather than the floor. A region touching all four edges (a wall filling the
+  view), or one that doesn't fill the quad fitted to it, is rejected rather
+  than guessed at. This scans a worn green table in a dim hall, or a red or
+  grey club table, not just a vivid blue one. The scan frame doubles as the
+  tracker's reference picture of the empty table.
 - **The camera answers *where*.** `js/vision.js` learns a slow-moving
   background of the scene — the phone is stationary, so most of the picture is
   the same frame after frame — and scores each pixel of a downscaled frame by

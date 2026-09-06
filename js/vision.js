@@ -576,43 +576,50 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const d = this.pctx.getImageData(0, 0, W, H).data;
     this.prev = null; this.bg = null;      // the frame size changed under us
 
-    // Competition tables are dark blue or green, and they are the most
-    // saturated large surface in a hall — floors, walls and wood are not.
-    // Restricting the search to those hues is what stops the scan settling on
-    // the floor, which is usually the bigger area in the picture.
-    const TABLE_HUES = [80, 270];      // green through blue
-    const bins = new Float32Array(36);
-    const px = [];
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
+// Don't assume the table's colour. The user is pointing the phone at the
+    // table, so whatever colour dominates the middle of the frame IS the
+    // table — under whatever lighting they have. Sample that colour and grow
+    // the region of pixels like it. This works for a worn green table in a
+    // dim hall as well as a vivid blue one, where a fixed hue range failed.
+    const cx0 = (W * 0.35) | 0, cx1 = (W * 0.65) | 0;
+    const cy0 = (H * 0.4) | 0, cy1 = (H * 0.7) | 0;
+    let sr = 0, sg = 0, sb = 0, sn = 0;
+    for (let y = cy0; y < cy1; y++) {
+      for (let x = cx0; x < cx1; x++) {
         const i = (y * W + x) * 4;
-        const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
-        px.push(hsv);
-        if (hsv.s < 0.22 || hsv.v < 0.1 || hsv.v > 0.95) continue;
-        if (hsv.h < TABLE_HUES[0] || hsv.h > TABLE_HUES[1]) continue;
-        const central = x > W * 0.1 && x < W * 0.9 && y > H * 0.15 && y < H * 0.95;
-        if (!central) continue;
-        // Weighted by saturation, so a vivid table beats a washed-out
-        // expanse of something else in the same hue family.
-        bins[Math.floor(hsv.h / 10) % 36] += hsv.s;
+        sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; sn++;
       }
     }
-    let hueBin = -1, most = 0;
-    for (let i = 0; i < 36; i++) if (bins[i] > most) { most = bins[i]; hueBin = i; }
-    if (hueBin < 0 || most < W * H * 0.015) return null;   // nothing table-coloured
-    const hue = hueBin * 10 + 5;
+    const seed = { r: sr / sn, g: sg / sn, b: sb / sn };
+
+    // Compare by chromaticity plus a loose brightness band, so the shading
+    // that falls across a real table (near edge bright, far edge dark) does
+    // not split it into two different "colours".
+    const chroma = (r, g, b) => { const t = r + g + b + 1; return [r / t, g / t]; };
+    const [scr, scg] = chroma(seed.r, seed.g, seed.b);
+    const seedLum = (seed.r + seed.g + seed.b) / 3;
+    const CHROMA_TOL = 0.055;    // how different in colour a pixel may be
+    const LUM_TOL = 95;          // and in brightness
 
     const mask = new Uint8Array(W * H);
     let count = 0;
-    for (let i = 0; i < W * H; i++) {
-      const p = px[i];
-      if (p.s < 0.18 || p.v < 0.08) continue;
-      if (hueDistance(p.h, hue) > 22) continue;
-      mask[i] = 1; count++;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const [cr, cg] = chroma(r, g, b);
+        if (Math.abs(cr - scr) + Math.abs(cg - scg) > CHROMA_TOL) continue;
+        if (Math.abs((r + g + b) / 3 - seedLum) > LUM_TOL) continue;
+        mask[y * W + x] = 1; count++;
+      }
     }
-    if (count < W * H * 0.02) return null;
+    if (count < W * H * 0.03) return null;
 
-    const region = largestRegion(mask, W, H);
+    // Grow from the centre specifically, so if the floor happens to match too
+    // it is the table (which the phone is aimed at) that anchors the region.
+    const seedIdx = (((H * 0.55) | 0) * W) + ((W * 0.5) | 0);
+    let region = regionContaining(mask, W, H, seedIdx);
+    if (!region || region.size < W * H * 0.03) region = largestRegion(mask, W, H);
     if (!region || region.size < W * H * 0.03) return null;
 
     // Fit a quad by taking the extreme points along both diagonals — for a
@@ -632,8 +639,9 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
       if (y < minY) minY = y; if (y > maxY) maxY = y;
     }
 
-    // A region filling the whole frame is the background, not a table.
-    if ((maxX - minX) > W * 0.95 && (maxY - minY) > H * 0.95) return null;
+    // A region touching all four edges is the background (a wall, the floor
+    // filling the view), not a table sitting in the frame.
+    if (minX <= 1 && maxX >= W - 2 && minY <= 1 && maxY >= H - 2) return null;
 
     const norm = p => ({ x: p.x / W, y: p.y / H });
     // Walk the corners the way calibration expects: the near-left corner
@@ -641,15 +649,16 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const corners = [norm(ext.bl), norm(ext.tl), norm(ext.tr), norm(ext.br)];
 
     const area = Math.abs(polygonArea(corners));
-    if (area < 0.02) return null;            // too small to be the table
+    if (area < 0.015) return null;           // too small to be the table
 
     // The region must actually fill the quad it was fitted to. An L-shaped or
     // scattered region can have four sensible extremes and be nothing like a
     // table.
     const fill = (region.size / (W * H)) / area;
-    if (fill < 0.55) return null;
+    if (fill < 0.5) return null;
 
     this.setTable(corners);
+    return { corners, coverage: region.size / (W * H), fill };    this.setTable(corners);
     return { corners, coverage: region.size / (W * H), fill };
   }
 
@@ -915,6 +924,25 @@ function connectedBlobs(mask, weight, w, x0, y0, x1, y1) {
     }
   }
   return blobs;
+}
+
+/** The 4-connected region of the mask that contains a given pixel. */
+function regionContaining(mask, W, H, start) {
+  if (!mask[start]) return null;
+  const seen = new Uint8Array(W * H);
+  const stack = [start];
+  seen[start] = 1;
+  const pixels = [];
+  while (stack.length) {
+    const i = stack.pop();
+    pixels.push(i);
+    const x = i % W, y = (i / W) | 0;
+    if (x > 0 && mask[i - 1] && !seen[i - 1]) { seen[i - 1] = 1; stack.push(i - 1); }
+    if (x < W - 1 && mask[i + 1] && !seen[i + 1]) { seen[i + 1] = 1; stack.push(i + 1); }
+    if (y > 0 && mask[i - W] && !seen[i - W]) { seen[i - W] = 1; stack.push(i - W); }
+    if (y < H - 1 && mask[i + W] && !seen[i + W]) { seen[i + W] = 1; stack.push(i + W); }
+  }
+  return { size: pixels.length, pixels };
 }
 
 /** Largest 4-connected region of a binary mask, found iteratively. */

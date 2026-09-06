@@ -316,6 +316,12 @@ export class RulesEngine {
     return `${srv}, ${rec}. ${this.server} to serve.`;
   }
 
+  /** The score split for display: the two numbers, and who serves next. */
+  scoreParts() {
+    const { A, B } = this.score;
+    return { A, B, server: this.server, matchOver: this.matchOver };
+  }
+
   scoreCall() {
     const { A, B } = this.score;
     const srv = this.server === 'A' ? [A, B] : [B, A];

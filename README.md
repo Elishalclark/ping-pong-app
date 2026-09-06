@@ -5,10 +5,13 @@ table. It watches through the camera, listens for the ball through the
 microphone, and calls the match: services, double bounces, volleys, net cords,
 balls out, scoring, service rotation, games and match.
 
-Every ruling is called out loud the way an umpire does — "Point A. 5, 3. A to
-serve." — written to a play log with a confidence figure, and can be
-overridden or undone with a thumb. The app goes deaf while it is speaking, so
-it never mistakes its own voice for the ball.
+**Every rally ends with the score**, shown on the call banner and spoken the
+way an umpire calls it: "Point A. 5, 3. A to serve." A service fault or a let
+is named as one before the number — "Fault on the service, A. Point B. 0, 1.
+A to serve." and "Let on the service. Serve again." — so the players know why
+the rally stopped. Every call is also written to a play log with a confidence
+figure, and can be overridden or undone with a thumb. The app goes deaf while
+it is speaking, so it never mistakes its own voice for the ball.
 
 It is built for a phone first: portrait and landscape layouts, tap-and-drag
 table calibration with a magnifier, a screen that won't sleep mid-match, and

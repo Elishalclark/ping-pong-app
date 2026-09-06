@@ -80,7 +80,14 @@ canvas#overlay{touch-action:none}  /* dragging a corner must not scroll the page
 
 /* --- call banner --- */
 .call{margin:10px 12px;padding:12px 14px;border-radius:10px;background:var(--panel);
-  border:1px solid var(--line);min-height:52px;display:flex;align-items:center;font-size:15px}
+  border:1px solid var(--line);min-height:52px;display:flex;align-items:center;
+  justify-content:space-between;gap:12px;font-size:15px}
+#callText{flex:1;min-width:0}
+/* The score as the umpire has just called it, after every rally. */
+.call-score{flex:0 0 auto;font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;
+  letter-spacing:.02em;text-align:right;line-height:1.15}
+.call-score .srv{display:block;font-size:11px;font-weight:600;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.06em}
 .call.point{border-color:var(--ok)} .call.fault{border-color:var(--bad)} .call.let{border-color:var(--warn)}
 .call.fault b{color:var(--bad)}
 

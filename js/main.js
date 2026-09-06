@@ -8,7 +8,8 @@ const els = {
   rotate: $('rotateHint'), cam: $('camStatus'), mic: $('micStatus'), fps: $('fpsStatus'),
   ptsA: $('ptsA'), ptsB: $('ptsB'), gamesA: $('gamesA'), gamesB: $('gamesB'),
   faultsA: $('faultsA'), faultsB: $('faultsB'),
-  teamA: $('teamA'), teamB: $('teamB'), call: $('callBanner'), log: $('log'),
+  teamA: $('teamA'), teamB: $('teamB'), call: $('callBanner'),
+  callText: $('callText'), callScore: $('callScore'), log: $('log'),
   level: $('levelBar'), flux: $('fluxBar'),
 };
 
@@ -278,6 +279,7 @@ function onCall(call, state) {
   if (call.type === 'info') { log(call.reason, 'info', call.confidence); return; }
 
   const isFault = call.kind === 'fault';
+  const onService = call.reason.startsWith('service') || call.reason === 'served out of turn';
   const label = {
     point: isFault
       ? `Fault, ${call.offender} — ${call.reason}. Point ${call.side}`
@@ -292,15 +294,16 @@ function onCall(call, state) {
   log(label, cls, call.confidence);
   buzz(call.type === 'match' ? [90, 60, 90, 60, 180] : call.type === 'game' ? [90, 60, 140] : 45);
 
-  // An umpire names the point, then calls the score. Game and match speak for
-  // themselves.
-  // A fault is named as a fault: an umpire does not call a service error and
-  // a rally lost in play the same way.
-  if (call.type === 'point' && isFault) announce(`Fault. Point ${call.side}. ${referee.engine.spokenScore()}`);
-  else if (call.type === 'point') announce(`Point ${call.side}. ${referee.engine.spokenScore()}`);
-  else if (call.type === 'game') announce(`Game to ${call.side}. ${referee.engine.spokenScore()}`);
-  else if (call.type === 'match') announce(`Game and match to ${call.side}.`);
-  else announce(label);
+  // Every rally ends with the score, on screen and out loud — that is what an
+  // umpire is for. A fault or a let on the service is named as such first, so
+  // the players know why the rally stopped before they hear the number.
+  showScore();
+  const score = referee.engine.spokenScore();
+  if (call.type === 'match') announce(`Game and match to ${call.side}.`);
+  else if (call.type === 'game') announce(`Game to ${call.side}. ${score}`);
+  else if (call.type === 'let') announce(`Let${onService ? ' on the service' : ''}. Serve again. ${score}`);
+  else if (isFault) announce(`Fault${onService ? ' on the service' : ''}, ${call.offender}. Point ${call.side}. ${score}`);
+  else announce(`Point ${call.side}. ${score}`);
 }
 
 function onEvent(ev) {
@@ -329,11 +332,18 @@ function render(state) {
 }
 
 function say(html, cls = 'info') {
-  // Wrapped in one element: the banner is a flex container, and loose text
-  // nodes beside a tag would each become a flex item, eating the space
-  // between them ("A to serve.Watching every play.").
-  els.call.innerHTML = `<span>${html}</span>`;
+  els.callText.innerHTML = html;
   els.call.className = `call ${cls}`;
+}
+
+/** Put the score on the banner, as the umpire has just called it. */
+function showScore() {
+  if (!referee) return;
+  const { A, B, server, matchOver } = referee.engine.scoreParts();
+  els.callScore.innerHTML = matchOver
+    ? '<span class="srv">match over</span>'
+    : `${A}–${B}<span class="srv">${server} to serve</span>`;
+  els.callScore.hidden = false;
 }
 
 function log(text, cls = 'info', confidence = 0) {
@@ -404,7 +414,7 @@ $('btnFault').addEventListener('click', () => {
   if (!referee) return;
   // A fault is always the server's, so there is nothing to choose.
   const server = referee.engine.server;
-  referee.engine.award(other(server), 'called by the umpire', 'fault')
+  referee.engine.award(other(server), 'service fault called by the umpire', 'fault')
     .forEach(c => onCall(c, referee.engine.state));
 });
 const other = s => (s === 'A' ? 'B' : 'A');
@@ -418,6 +428,7 @@ $('btnReset').addEventListener('click', () => {
   referee.engine.reset($('firstServer').value);
   render(referee.engine.state);
   say('Match reset.', 'info');
+  showScore();
 });
 $('btnClearLog').addEventListener('click', () => (els.log.innerHTML = ''));
 $('firstServer').addEventListener('change', e => {

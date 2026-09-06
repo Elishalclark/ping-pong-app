@@ -12,6 +12,9 @@ It is built for a phone first: portrait and landscape layouts, tap-and-drag
 table calibration with a magnifier, a screen that won't sleep mid-match, and
 it installs to the home screen and runs offline.
 
+**Live at <https://elishalclark.github.io/ping-pong-app/>** — open it on your
+phone, allow the camera and microphone, and calibrate the table.
+
 ## Getting it onto your phone
 
 The camera and microphone only work in a **secure context**: `http://localhost`

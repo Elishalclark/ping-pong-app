@@ -8,6 +8,13 @@
 // larger blobs made by arms and shirts.
 
 
+// A regulation table is 2.74 m long and 1.525 m wide, and the ball is 40 mm.
+// Once the box is on the table, those numbers turn a position in the picture
+// into the size the ball must appear there — which is a far better test than
+// any fixed pixel threshold.
+const TABLE_WIDTH_M = 1.525;
+const BALL_M = 0.04;
+
 export class VisionReferee {
   constructor(video, overlay) {
     this.video = video;
@@ -126,8 +133,9 @@ export class VisionReferee {
     // dropped, so trade resolution for frame rate until the phone keeps up.
     const cost = performance.now() - t;
     this._cost = this._cost ? this._cost * 0.9 + cost * 0.1 : cost;
-    if (this._cost > 11 && this.procWidth > 128) this.procWidth -= 16;
-    else if (this._cost < 4 && this.procWidth < 224) this.procWidth += 8;
+    const floor = this.minProcWidth ?? 128;
+    if (this._cost > 11 && this.procWidth > floor) this.procWidth -= 16;
+    else if (this._cost < 4 && this.procWidth < 288) this.procWidth += 8;
 
     this._frames++;
     if (t - this._fpsAt > 500) {
@@ -161,10 +169,27 @@ export class VisionReferee {
       }
     }
 
+    // The ball can only be inside the out-of-bounds line, so there is no
+    // reason to look at the rest of the room. On a phone this is most of the
+    // saving: fewer pixels touched every frame, and less to mistake for a ball.
+    let x0 = 1, y0 = 1, x1 = w - 1, y1 = h - 1;
+    if (this.table) {
+      const b = this.table.boundary;
+      const pad = 4;
+      x0 = Math.max(1, Math.floor(Math.min(...b.map(p => p.x)) * w) - pad);
+      x1 = Math.min(w - 1, Math.ceil(Math.max(...b.map(p => p.x)) * w) + pad);
+      y0 = Math.max(1, Math.floor(Math.min(...b.map(p => p.y)) * h) - pad);
+      y1 = Math.min(h - 1, Math.ceil(Math.max(...b.map(p => p.y)) * h) + pad);
+    }
+
     const thr = this.motionThreshold;
-    const pts = [];
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
+    // Candidate pixels are marked in a mask rather than collected in a list,
+    // so they can be grouped by actual connectivity below.
+    const mask = new Uint8Array(n);
+    const weight = new Float32Array(n);
+    let candidates = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
         const i = y * w + x;
         const g = grey[i];
         // Against a mostly static scene, the ball stands out from the learned
@@ -176,8 +201,13 @@ export class VisionReferee {
         const moving = Math.abs(g - this.prev[i]);
         if (moving < thr * 0.4) continue;   // a static bright object isn't the ball
         if (px >= 0 && Math.hypot(x - px, y - py) > searchR) continue;
-        if (g < 90) continue;               // the ball is white or orange, and bright
-        pts.push({ x, y, s: fromBg * (g / 255) });
+        // Bright *for this scene*: a white ball on a dark blue table and an
+        // orange ball in a dim hall are both brighter than the table behind
+        // them, but neither is reliably above a fixed threshold.
+        if (g < 55) continue;
+        mask[i] = 1;
+        weight[i] = fromBg * (g / 255);
+        candidates++;
       }
     }
     this.prev = grey;
@@ -186,24 +216,16 @@ export class VisionReferee {
     // baking the ball into the background is what makes a tracker go blind
     // when a rally settles into a rhythm.
     for (let i = 0; i < n; i++) this.bg[i] += (grey[i] - this.bg[i]) * 0.02;
-    if (!pts.length) return null;
+    if (!candidates) return null;
 
-    // Cluster greedily; a ball at this scale is only a few pixels across, so
-    // clusters bigger than ~90 px are limbs or camera shake, not the ball.
-    const clusters = [];
-    for (const p of pts) {
-      let c = clusters.find(c => Math.abs(c.cx - p.x) < 6 && Math.abs(c.cy - p.y) < 6);
-      if (!c) { c = { sx: 0, sy: 0, sw: 0, n: 0, cx: p.x, cy: p.y, x0: p.x, x1: p.x, y0: p.y, y1: p.y }; clusters.push(c); }
-      c.sx += p.x * p.s; c.sy += p.y * p.s; c.sw += p.s; c.n++;
-      c.cx = c.sx / c.sw; c.cy = c.sy / c.sw;
-      if (p.x < c.x0) c.x0 = p.x; if (p.x > c.x1) c.x1 = p.x;
-      if (p.y < c.y0) c.y0 = p.y; if (p.y > c.y1) c.y1 = p.y;
-      if (clusters.length > 220) break;
-    }
+    // Group by connectivity, not by proximity. Grouping greedily lets a large
+    // object — an arm, a shirt — fragment into several ball-sized pieces and
+    // slip straight through the size test below.
+    const blobs = connectedBlobs(mask, weight, w, x0, y0, x1, y1);
 
     let best = null;
-    for (const c of clusters) {
-      if (c.n > 90 || c.n < 2) continue;
+    for (const c of blobs) {
+      if (c.n < 2) continue;
       const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1;
       // A ball is roughly round. A fast one smears into a short streak, but
       // an arm or a shirt edge is far longer in one direction than the other.
@@ -211,9 +233,24 @@ export class VisionReferee {
       if (elongation > 4) continue;
       const fill = c.n / (bw * bh);          // a blob, not a scattered edge
       if (fill < 0.3) continue;
-      let score = (c.sw / c.n) * (1 / (1 + c.n / 30)) * fill;
-      if (px >= 0) score *= 1 / (1 + Math.hypot(c.cx - px, c.cy - py) / 25);
-      if (!best || score > best.score) best = { x: c.cx / w, y: c.cy / h, score, n: c.n };
+
+      const cx = c.sx / c.sw, cy = c.sy / c.sw;
+      // The size test: a ball at this spot on the table must measure about
+      // this many pixels across. Anything appreciably bigger is a hand, a
+      // sleeve or a shadow, whatever else it looks like.
+      const expect = this.table ? this.expectedBallPx({ x: cx / w, y: cy / h }, w, h) : 0;
+      let sizeFit = 1;
+      if (expect > 0) {
+        const dim = Math.max(bw, bh);
+        if (dim > expect * 3.5 || dim < expect * 0.45) continue;
+        sizeFit = 1 / (1 + Math.abs(dim - expect) / expect);
+      } else if (c.n > 90) {
+        continue;                            // uncalibrated: fall back to a cap
+      }
+
+      let score = (c.sw / c.n) * (1 / (1 + c.n / 30)) * fill * sizeFit;
+      if (px >= 0) score *= 1 / (1 + Math.hypot(cx - px, cy - py) / 25);
+      if (!best || score > best.score) best = { x: cx / w, y: cy / h, score, n: c.n };
     }
     if (!best) return null;
     return { ...best, t, conf: Math.min(1, best.score / 40) };
@@ -287,13 +324,175 @@ export class VisionReferee {
     const centre = corners.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
     const halfA = [corners[0], corners[1], net[0], net[1]];
     const halfB = [net[1], net[0], corners[2], corners[3]];
+    // The two end lines are both one table-width long, so the difference in
+    // their apparent length is the perspective foreshortening of the view.
+    const nearMid = mid(corners[0], corners[3]);
+    const farMid = mid(corners[1], corners[2]);
     this.table = {
       corners: corners.map(c => ({ ...c })),
       net, centre, halfA, halfB,
       sideOfA: sign(cross(net[0], net[1], corners[0])),
       boundary: expand(corners, centre, 1 + this.outMargin),
+      nearEnd: [corners[0], corners[3]],
+      farEnd: [corners[1], corners[2]],
+      nearMid, farMid,
     };
+    this._sizeProcWidth();
     return this.table;
+  }
+
+  /**
+   * Find the table in the current frame and place the box on it.
+   *
+   * A table tennis table is the one big, uniformly coloured, low-texture
+   * surface in the picture — blue or green in almost every hall. So: take the
+   * dominant colour of the middle of the frame, keep every pixel close to it,
+   * take the largest connected region of those, and fit a quadrilateral to
+   * its extremes. It is a starting position, not a survey: the corners stay
+   * draggable afterwards.
+   *
+   * Returns { corners, coverage } or null when nothing table-like is found.
+   */
+  scanTable() {
+    const vw = this.video.videoWidth, vh = this.video.videoHeight;
+    if (!vw) return null;
+
+    const W = 160, H = Math.round((W * vh) / vw);
+    this.proc.width = W; this.proc.height = H;
+    this.pctx.drawImage(this.video, 0, 0, W, H);
+    const d = this.pctx.getImageData(0, 0, W, H).data;
+    this.prev = null; this.bg = null;      // the frame size changed under us
+
+    // Competition tables are dark blue or green, and they are the most
+    // saturated large surface in a hall — floors, walls and wood are not.
+    // Restricting the search to those hues is what stops the scan settling on
+    // the floor, which is usually the bigger area in the picture.
+    const TABLE_HUES = [80, 270];      // green through blue
+    const bins = new Float32Array(36);
+    const px = [];
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
+        px.push(hsv);
+        if (hsv.s < 0.22 || hsv.v < 0.1 || hsv.v > 0.95) continue;
+        if (hsv.h < TABLE_HUES[0] || hsv.h > TABLE_HUES[1]) continue;
+        const central = x > W * 0.1 && x < W * 0.9 && y > H * 0.15 && y < H * 0.95;
+        if (!central) continue;
+        // Weighted by saturation, so a vivid table beats a washed-out
+        // expanse of something else in the same hue family.
+        bins[Math.floor(hsv.h / 10) % 36] += hsv.s;
+      }
+    }
+    let hueBin = -1, most = 0;
+    for (let i = 0; i < 36; i++) if (bins[i] > most) { most = bins[i]; hueBin = i; }
+    if (hueBin < 0 || most < W * H * 0.015) return null;   // nothing table-coloured
+    const hue = hueBin * 10 + 5;
+
+    const mask = new Uint8Array(W * H);
+    let count = 0;
+    for (let i = 0; i < W * H; i++) {
+      const p = px[i];
+      if (p.s < 0.18 || p.v < 0.08) continue;
+      if (hueDistance(p.h, hue) > 22) continue;
+      mask[i] = 1; count++;
+    }
+    if (count < W * H * 0.02) return null;
+
+    const region = largestRegion(mask, W, H);
+    if (!region || region.size < W * H * 0.03) return null;
+
+    // Fit a quad by taking the extreme points along both diagonals — for a
+    // rectangle seen in perspective these land on its four corners.
+    const ext = {
+      tl: { v: Infinity }, br: { v: -Infinity }, tr: { v: -Infinity }, bl: { v: Infinity },
+    };
+    let minX = W, maxX = 0, minY = H, maxY = 0;
+    for (const idx of region.pixels) {
+      const x = idx % W, y = (idx / W) | 0;
+      const sum = x + y, diff = x - y;
+      if (sum < ext.tl.v) ext.tl = { v: sum, x, y };
+      if (sum > ext.br.v) ext.br = { v: sum, x, y };
+      if (diff > ext.tr.v) ext.tr = { v: diff, x, y };
+      if (diff < ext.bl.v) ext.bl = { v: diff, x, y };
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+
+    // A region filling the whole frame is the background, not a table.
+    if ((maxX - minX) > W * 0.95 && (maxY - minY) > H * 0.95) return null;
+
+    const norm = p => ({ x: p.x / W, y: p.y / H });
+    // Walk the corners the way calibration expects: the near-left corner
+    // first, then up the left edge, across, and back down.
+    const corners = [norm(ext.bl), norm(ext.tl), norm(ext.tr), norm(ext.br)];
+
+    const area = Math.abs(polygonArea(corners));
+    if (area < 0.02) return null;            // too small to be the table
+
+    // The region must actually fill the quad it was fitted to. An L-shaped or
+    // scattered region can have four sensible extremes and be nothing like a
+    // table.
+    const fill = (region.size / (W * H)) / area;
+    if (fill < 0.55) return null;
+
+    this.setTable(corners);
+    return { corners, coverage: region.size / (W * H), fill };
+  }
+
+  /**
+   * Expected ball diameter in processing pixels at a point, from the table's
+   * real dimensions and how foreshortened the table is there.
+   */
+  expectedBallPx(p, W, H) {
+    const t = this.table;
+    if (!t) return 0;
+    const len = (a, b) => Math.hypot((a.x - b.x) * W, (a.y - b.y) * H);
+    const near = len(t.nearEnd[0], t.nearEnd[1]);
+    const far = len(t.farEnd[0], t.farEnd[1]);
+
+    // How far down the table the point lies, 0 at the near end, 1 at the far.
+    const dx = t.farMid.x - t.nearMid.x, dy = t.farMid.y - t.nearMid.y;
+    const len2 = dx * dx + dy * dy || 1e-9;
+    const f = Math.min(1.4, Math.max(-0.4,
+      ((p.x - t.nearMid.x) * dx + (p.y - t.nearMid.y) * dy) / len2));
+
+    const widthHere = near + (far - near) * f;
+    return Math.max(1.2, widthHere * (BALL_M / TABLE_WIDTH_M));
+  }
+
+  /**
+   * Choose a processing resolution from the geometry rather than by guesswork:
+   * enough that the ball is a few pixels across even at the far end, but no
+   * more, because every extra pixel is battery.
+   */
+  _sizeProcWidth() {
+    const t = this.table;
+    if (!t) return;
+    const probeW = 192, probeH = probeW * 0.75;
+    const atFar = this.expectedBallPx(t.farMid, probeW, probeH);
+    const wanted = probeW * (3.2 / Math.max(0.6, atFar));
+    this.procWidth = Math.round(Math.min(288, Math.max(144, wanted)) / 8) * 8;
+    this.minProcWidth = Math.max(128, Math.round(this.procWidth * 0.7));
+    this.prev = null; this.bg = null;
+  }
+
+  /** Remember the current frame as the empty-table background. */
+  captureBackground() {
+    const vw = this.video.videoWidth;
+    if (!vw) return false;
+    const W = this.procWidth, H = Math.round((W * this.video.videoHeight) / vw);
+    this.proc.width = W; this.proc.height = H;
+    this.pctx.drawImage(this.video, 0, 0, W, H);
+    const d = this.pctx.getImageData(0, 0, W, H).data;
+    const n = W * H;
+    const grey = new Uint8ClampedArray(n);
+    for (let i = 0, p = 0; i < n; i++, p += 4) {
+      grey[i] = (d[p] * 77 + d[p + 1] * 151 + d[p + 2] * 28) >> 8;
+    }
+    this.bg = Float32Array.from(grey);
+    this.prev = grey;
+    return true;
   }
 
   /** Slide the whole box, keeping its shape. Used to drag it onto the table. */
@@ -442,6 +641,95 @@ export class VisionReferee {
 }
 
 // --- small geometry helpers ---------------------------------------------
+function rgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = 60 * (((g - b) / d) % 6);
+    else if (max === g) h = 60 * ((b - r) / d + 2);
+    else h = 60 * ((r - g) / d + 4);
+  }
+  if (h < 0) h += 360;
+  return { h, s: max === 0 ? 0 : d / max, v: max };
+}
+
+const hueDistance = (a, b) => {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+};
+
+/**
+ * Every 8-connected blob in a mask, with its weighted centroid and bounds.
+ * Eight-way connectivity keeps a motion-blurred ball in one piece.
+ */
+function connectedBlobs(mask, weight, w, x0, y0, x1, y1) {
+  const blobs = [];
+  const stack = [];
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const start = y * w + x;
+      if (mask[start] !== 1) continue;
+      stack.length = 0;
+      stack.push(start);
+      mask[start] = 2;
+      const c = { n: 0, sx: 0, sy: 0, sw: 0, x0: x, x1: x, y0: y, y1: y };
+      while (stack.length) {
+        const i = stack.pop();
+        const ix = i % w, iy = (i / w) | 0;
+        const s = weight[i];
+        c.n++; c.sx += ix * s; c.sy += iy * s; c.sw += s;
+        if (ix < c.x0) c.x0 = ix; if (ix > c.x1) c.x1 = ix;
+        if (iy < c.y0) c.y0 = iy; if (iy > c.y1) c.y1 = iy;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = ix + dx, ny = iy + dy;
+            if (nx < x0 || ny < y0 || nx >= x1 || ny >= y1) continue;
+            const j = ny * w + nx;
+            if (mask[j] === 1) { mask[j] = 2; stack.push(j); }
+          }
+        }
+      }
+      if (c.sw > 0) blobs.push(c);
+      if (blobs.length > 400) return blobs;   // pathological frame; stop early
+    }
+  }
+  return blobs;
+}
+
+/** Largest 4-connected region of a binary mask, found iteratively. */
+function largestRegion(mask, W, H) {
+  const seen = new Uint8Array(W * H);
+  const stack = [];
+  let best = null;
+  for (let start = 0; start < W * H; start++) {
+    if (!mask[start] || seen[start]) continue;
+    stack.length = 0;
+    stack.push(start);
+    seen[start] = 1;
+    const pixels = [];
+    while (stack.length) {
+      const i = stack.pop();
+      pixels.push(i);
+      const x = i % W, y = (i / W) | 0;
+      if (x > 0 && mask[i - 1] && !seen[i - 1]) { seen[i - 1] = 1; stack.push(i - 1); }
+      if (x < W - 1 && mask[i + 1] && !seen[i + 1]) { seen[i + 1] = 1; stack.push(i + 1); }
+      if (y > 0 && mask[i - W] && !seen[i - W]) { seen[i - W] = 1; stack.push(i - W); }
+      if (y < H - 1 && mask[i + W] && !seen[i + W]) { seen[i + W] = 1; stack.push(i + W); }
+    }
+    if (!best || pixels.length > best.size) best = { size: pixels.length, pixels };
+  }
+  return best;
+}
+
+function polygonArea(pts) {
+  let a = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    a += (pts[j].x + pts[i].x) * (pts[j].y - pts[i].y);
+  }
+  return a / 2;
+}
+
 /** Rounded rectangle path, with a fallback for browsers without roundRect. */
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -459,6 +747,7 @@ function expand(pts, centre, k) {
   return pts.map(p => ({ x: centre.x + (p.x - centre.x) * k, y: centre.y + (p.y - centre.y) * k }));
 }
 
+const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
 const cross = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 const sign = v => (v >= 0 ? 1 : -1);
 

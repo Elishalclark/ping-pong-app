@@ -52,6 +52,10 @@ function beginCalibration() {
 }
 
 function finishCalibration() {
+  // Whatever is in front of the camera now becomes the reference frame. If
+  // the players are already standing there it self-corrects within a second
+  // or two, and if the table is empty it starts perfectly.
+  vision.captureBackground();
   calibrating = false;
   els.hint.hidden = true;
   els.overlay.classList.remove('calibrating');
@@ -59,6 +63,22 @@ function finishCalibration() {
   say('Table set. Tap <b>Begin</b> when the players are ready.', 'info');
   log('table box placed', 'info', 1);
 }
+
+$('btnScan').addEventListener('click', () => {
+  const hint = $('calibText');
+  const found = vision.scanTable();
+  if (!found) {
+    hint.innerHTML = 'Couldn’t make out the table. Point the phone at it from where it will sit, with the table filling most of the picture — or drag the box on by hand.';
+    log('table scan found nothing', 'info', 0);
+    return;
+  }
+  // The scan frame is the table with nobody playing on it, which is exactly
+  // the reference the tracker wants for spotting the ball later.
+  vision.captureBackground();
+  hint.innerHTML = `Found the table. Check the corners and <b>Swap ends</b> if A and B are the wrong way round.`;
+  log(`table scanned — ${Math.round(found.coverage * 100)}% of the view`, 'info', 1);
+  buzz(30);
+});
 
 $('btnCalibDone').addEventListener('click', finishCalibration);
 $('btnSwapEnds').addEventListener('click', () => {

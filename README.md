@@ -63,9 +63,12 @@ no browser bars, and works with no signal at all.
    The app deliberately turns off the browser's noise suppression, echo
    cancellation and auto gain — phones enable all three by default, and all
    three are designed to remove exactly the kind of short click a ball makes.
-3. **Tap Start**, then **place the box**. A box appears over the picture: drag
-   its middle to move it, drag a corner to reshape it, until its edges sit on
-   the playing surface. A magnifier appears under your finger so you can place
+3. **Tap Start**, then **place the box**. Point the phone at the empty table
+   from where it is going to sit and tap **Scan table**: it finds the table in
+   that view and puts the box on it. Check the corners and correct them if it
+   is off. If the scan can't make out the table it says so, and you place the
+   box by hand: drag its middle to move it, drag a corner to reshape it, until
+   its edges sit on the playing surface. A magnifier appears under your finger so you can place
    a corner precisely. **Swap ends** flips which end is Player A's. Tap
    **Done** when it fits. Each half is labelled **A** and **B** in the same
    colours as the scoreboard, so you can see at a glance whose end is whose.
@@ -88,6 +91,10 @@ The four umpire controls — Point A, Point B, Let, Undo — stay on screen in
 both orientations. On a laptop, `A` / `B` award a point, `L` calls a let and
 `U` undoes.
 
+The whole interface fits one screen, from a small phone up to a tablet:
+nothing that matters mid-match is ever a scroll away. On a tablet the picture
+and the type both get bigger rather than the layout just stretching.
+
 Battery and heat are real: tracking every frame with the screen held awake is
 demanding. A phone will get warm over a long match, so plug it in if you can.
 The tracker measures its own cost per frame and quietly lowers its processing
@@ -107,6 +114,15 @@ The two sensors answer different questions, and neither is trusted alone.
   short click; a racket is lower and rings longer; a net touch is quiet and
   dull. Browsers too old for AudioWorklet (iOS before 14.5) fall back to a
   ScriptProcessor running the same detector with looser timing.
+- **Scanning finds the table.** A competition table is the one large, strongly
+  coloured surface in a hall — blue or green in almost every venue — so the
+  scan takes the dominant table-coloured region of the frame, keeps its
+  largest connected part, and fits a quadrilateral to its extremes. It is
+  restricted to those hues on purpose: without that it settles on the floor,
+  which is usually the bigger area in the picture. A region that fills the
+  frame, or that doesn't fill the quad fitted to it, is rejected rather than
+  guessed at. The scan frame doubles as the tracker's reference picture of the
+  empty table.
 - **The camera answers *where*.** `js/vision.js` learns a slow-moving
   background of the scene — the phone is stationary, so most of the picture is
   the same frame after frame — and scores each pixel of a downscaled frame by
@@ -117,6 +133,18 @@ The two sensors answer different questions, and neither is trusted alone.
   where it is, and it loses the ball entirely whenever the ball slows down.
   Blobs that are too long and thin, or too sparse, are rejected as arms and
   shirt edges.
+- **Size is what says "that is a ball".** Once the box is on the table the app
+  knows the real thing is 2.74 m by 1.525 m, so it can work out how many
+  pixels across a 40 mm ball must be at any point in the picture — smaller at
+  the far end, larger near the camera. Anything appreciably bigger or smaller
+  is not the ball, whatever else it looks like. Candidate pixels are grouped
+  by actual connectivity for this: grouping them by proximity lets a large
+  object fragment into several ball-sized pieces and walk straight through the
+  size test.
+- **It only looks where the ball can be.** The search is bounded by the
+  out-of-bounds line, and the processing resolution is chosen from the
+  geometry — enough that the ball is about three pixels across at the far end,
+  and no more, because every extra pixel is battery.
 - **`js/referee.js` fuses them.** When a transient arrives, it asks the tracker
   where the ball was at that instant. Inside the calibrated table quad, it's a
   bounce, and which side of the net line it fell on decides whose half. Outside

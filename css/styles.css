@@ -21,7 +21,9 @@ body{
   -webkit-user-select:none;user-select:none;
 }
 .app{
-  min-height:100dvh;display:flex;flex-direction:column;
+  /* An app shell, not a page: the whole thing fits the screen and only the
+     tab panel scrolls. On a phone the controls must never be a scroll away. */
+  height:100dvh;display:flex;flex-direction:column;overflow:hidden;
   padding:var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l);
 }
 
@@ -38,8 +40,9 @@ body{
   background:#1b232e;border:1px solid var(--line);border-radius:9px;color:var(--ink)}
 
 /* --- camera --- */
-.stage{position:relative}
-.video-wrap{position:relative;background:#000;overflow:hidden;aspect-ratio:4/3;width:100%}
+.stage{position:relative;flex:0 0 auto}
+.video-wrap{position:relative;background:#000;overflow:hidden;width:100%;
+  aspect-ratio:4/3;max-height:38dvh}
 video,canvas#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
 canvas#overlay{touch-action:none}  /* dragging a corner must not scroll the page */
 .loupe{position:absolute;top:8px;right:8px;width:112px;height:112px;border-radius:50%;
@@ -79,9 +82,9 @@ canvas#overlay{touch-action:none}  /* dragging a corner must not scroll the page
 .rotate-hint{bottom:auto;top:0;background:rgba(210,153,34,.92);color:#1a1204;font-weight:600}
 
 /* --- call banner --- */
-.call{margin:10px 12px;padding:12px 14px;border-radius:10px;background:var(--panel);
-  border:1px solid var(--line);min-height:52px;display:flex;align-items:center;
-  justify-content:space-between;gap:12px;font-size:15px}
+.call{margin:8px 12px;padding:10px 12px;border-radius:10px;background:var(--panel);
+  border:1px solid var(--line);min-height:48px;display:flex;align-items:center;
+  justify-content:space-between;gap:12px;font-size:14.5px}
 #callText{flex:1;min-width:0}
 /* The score as the umpire has just called it, after every rally. */
 .call-score{flex:0 0 auto;font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;
@@ -91,7 +94,7 @@ canvas#overlay{touch-action:none}  /* dragging a corner must not scroll the page
 .call.point{border-color:var(--ok)} .call.fault{border-color:var(--bad)} .call.let{border-color:var(--warn)}
 .call.fault b{color:var(--bad)}
 
-.meters{display:flex;gap:14px;padding:0 12px}
+.meters{display:flex;gap:14px;padding:0 12px;flex:0 0 auto}
 .meter{flex:1;display:flex;align-items:center;gap:8px}
 .meter label{font-size:10px;color:var(--dim);text-transform:uppercase;width:38px}
 .bar-track{flex:1;height:5px;background:#0f151d;border-radius:3px;overflow:hidden}
@@ -109,14 +112,14 @@ button:active:not(:disabled){transform:scale(.97);filter:brightness(1.25)}
 .wide{width:100%;margin-top:12px}
 .link{background:none;border:none;color:var(--a);padding:0;text-decoration:underline;font-size:13px}
 
-.actions{display:flex;gap:8px;padding:10px 12px}
+.actions{display:flex;gap:8px;padding:8px 12px}
 .actions .big{flex:1}
 
 /* --- tabs --- */
-.tabs{display:flex;gap:6px;padding:2px 12px 10px;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:6px;padding:2px 12px 8px;border-bottom:1px solid var(--line);flex:0 0 auto}
 .tab{flex:1;min-height:40px;font-size:13px;color:var(--dim);background:transparent;border-color:transparent}
 .tab.active{color:var(--ink);background:var(--panel);border-color:var(--line)}
-.side{display:flex;flex-direction:column;min-height:0}
+.side{display:flex;flex-direction:column;flex:1;min-height:0}
 .tabpanel{display:none;padding:12px;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .tabpanel.active{display:block}
 
@@ -151,6 +154,19 @@ input[type=range]{width:100%;height:34px;accent-color:var(--a)}
 .log .conf{margin-left:auto;color:var(--dim);font-size:11px}
 .log li.point{color:var(--ok)} .log li.fault{color:var(--bad)} .log li.let{color:var(--warn)}
 
+/* A small phone has no height to spare: shrink the picture and drop the
+   audio meters, which are for tuning rather than for umpiring. */
+@media (orientation:portrait) and (max-height:740px){
+  .video-wrap{max-height:32dvh}
+  .meters{display:none}
+  .call{min-height:42px;font-size:14px}
+  .big{min-height:44px;padding:10px 12px;font-size:14px}
+}
+@media (orientation:portrait) and (max-height:640px){
+  .video-wrap{max-height:28dvh}
+  .pts{font-size:26px}
+}
+
 /* --- phone in landscape and larger screens ---------------------------------
    Three children (bar, stage, side) placed explicitly. An explicit grid is
    used rather than wrapping flex so nothing can be auto-placed into a row of
@@ -181,7 +197,7 @@ input[type=range]{width:100%;height:34px;accent-color:var(--a)}
   .rotate-hint{display:none!important}
 }
 
-@media (min-width:820px) and (min-height:561px){
+@media (min-width:900px) and (min-height:561px){
   .app{
     display:grid;height:100dvh;overflow:hidden;
     grid-template-columns:minmax(0,1fr) clamp(340px,32%,460px);

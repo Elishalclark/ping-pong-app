@@ -120,3 +120,187 @@ test('position lookup matches a sound to where the ball was', () => {
   const far = v.positionAt(5000, 120);
   assert.equal(far, null, 'a moment with no ball near it does not');
 });
+
+// --- ball size from the table's real dimensions -------------------------
+
+test('the ball is expected to look bigger near the camera than far from it', () => {
+  const v = make();
+  const W = 192, H = 144;
+  const near = v.expectedBallPx(v.table.nearMid, W, H);
+  const far = v.expectedBallPx(v.table.farMid, W, H);
+  assert.ok(near > far, `near ${near} should exceed far ${far}`);
+});
+
+test('expected ball size follows the table’s real proportions', () => {
+  const v = make();
+  const W = 192, H = 144;
+  // The near end line is one table width (1.525 m) long; a 40 mm ball there
+  // must measure that fraction of it.
+  const nearLen = Math.hypot(
+    (CORNERS[0].x - CORNERS[3].x) * W, (CORNERS[0].y - CORNERS[3].y) * H);
+  const expected = nearLen * (0.04 / 1.525);
+  const got = v.expectedBallPx(v.table.nearMid, W, H);
+  assert.ok(Math.abs(got - expected) < expected * 0.05,
+    `expected about ${expected.toFixed(2)}px, got ${got.toFixed(2)}px`);
+});
+
+test('processing resolution is chosen so the ball is a few pixels across', () => {
+  const wide = new VisionReferee({}, stubCanvas());
+  wide.setTable(CORNERS);
+  assert.ok(wide.procWidth >= 144 && wide.procWidth <= 288, `got ${wide.procWidth}`);
+  // A table that fills less of the frame needs more resolution, not less.
+  const small = new VisionReferee({}, stubCanvas());
+  small.setTable([
+    { x: 0.42, y: 0.56 }, { x: 0.46, y: 0.46 },
+    { x: 0.58, y: 0.46 }, { x: 0.62, y: 0.56 },
+  ]);
+  assert.ok(small.procWidth >= wide.procWidth,
+    `small table ${small.procWidth} should not be coarser than large ${wide.procWidth}`);
+});
+
+// --- what counts as a ball ----------------------------------------------
+
+/** A flat grey frame with bright discs painted on it. */
+function frameWith(w, h, blobs, base = 70) {
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = base;
+    data[i * 4 + 3] = 255;
+  }
+  for (const { x, y, r, v = 240 } of blobs) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy > r * r) continue;
+        const px = Math.round(x + dx), py = Math.round(y + dy);
+        if (px < 0 || py < 0 || px >= w || py >= h) continue;
+        const i = (py * w + px) * 4;
+        data[i] = data[i + 1] = data[i + 2] = v;
+      }
+    }
+  }
+  return { data };
+}
+
+/** Prime the background model, then detect on a frame containing blobs. */
+function detect(v, w, h, blobs) {
+  v.prev = null; v.bg = null; v.track = null;
+  v._findBall(frameWith(w, h, []), w, h, 0);   // learns prev
+  v._findBall(frameWith(w, h, []), w, h, 16);  // learns background
+  return v._findBall(frameWith(w, h, blobs), w, h, 32);
+}
+
+test('a ball-sized bright blob on the table is taken for the ball', () => {
+  const v = make();
+  const w = 192, h = 144;
+  const centre = { x: 0.5, y: 0.55 };
+  const r = Math.max(1, v.expectedBallPx(centre, w, h) / 2);
+  const found = detect(v, w, h, [{ x: centre.x * w, y: centre.y * h, r }]);
+  assert.ok(found, 'the ball was not found');
+  assert.ok(Math.abs(found.x - centre.x) < 0.05 && Math.abs(found.y - centre.y) < 0.05,
+    `found at ${found.x.toFixed(2)},${found.y.toFixed(2)}`);
+});
+
+test('an arm-sized blob is not taken for the ball', () => {
+  const v = make();
+  const w = 192, h = 144;
+  const centre = { x: 0.5, y: 0.55 };
+  const tooBig = v.expectedBallPx(centre, w, h) * 4;
+  const found = detect(v, w, h, [{ x: centre.x * w, y: centre.y * h, r: tooBig }]);
+  assert.equal(found, null, 'a blob four times the ball’s size was accepted');
+});
+
+test('with both in view, the ball-sized one wins', () => {
+  const v = make();
+  const w = 192, h = 144;
+  const ball = { x: 0.62, y: 0.5 };
+  const r = Math.max(1, v.expectedBallPx(ball, w, h) / 2);
+  const found = detect(v, w, h, [
+    { x: ball.x * w, y: ball.y * h, r },
+    { x: 0.35 * w, y: 0.6 * h, r: r * 5 },      // a sleeve
+  ]);
+  assert.ok(found, 'nothing was found');
+  assert.ok(Math.abs(found.x - ball.x) < 0.06, `picked ${found.x.toFixed(2)} not the ball`);
+});
+
+test('nothing outside the out-of-bounds line is even looked at', () => {
+  const v = make();
+  const w = 192, h = 144;
+  const centre = { x: 0.5, y: 0.55 };
+  const r = Math.max(1, v.expectedBallPx(centre, w, h) / 2);
+  // Top-left corner of the frame, well outside the boundary.
+  const found = detect(v, w, h, [{ x: 4, y: 4, r }]);
+  assert.equal(found, null);
+});
+
+// --- scanning the table from a photo ------------------------------------
+
+/** Paint a scene: a coloured quad on a floor, as RGBA bytes. */
+function paint(w, h, { quad, table = [31, 111, 178], floor = [107, 98, 87] } = {}) {
+  const data = new Uint8ClampedArray(w * h * 4);
+  const inside = (x, y) => {
+    if (!quad) return false;
+    let hit = false;
+    for (let i = 0, j = 3; i < 4; j = i++) {
+      const [xi, yi] = quad[i], [xj, yj] = quad[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+    }
+    return hit;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const c = inside(x / w, y / h) ? table : floor;
+      const i = (y * w + x) * 4;
+      data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255;
+    }
+  }
+  return data;
+}
+
+/** A vision instance whose camera shows the given painted scene. */
+function withScene(scene) {
+  const v = new VisionReferee({ videoWidth: 640, videoHeight: 480 }, stubCanvas());
+  v.proc = { width: 0, height: 0 };
+  v.pctx = {
+    drawImage() {},
+    getImageData: (x, y, w, h) => ({ data: paint(w, h, scene) }),
+  };
+  return v;
+}
+
+const TRUE_QUAD = [[0.2, 0.8], [0.3, 0.4], [0.7, 0.4], [0.8, 0.8]];
+
+test('scanning finds a blue table on a floor', () => {
+  const v = withScene({ quad: TRUE_QUAD });
+  const found = v.scanTable();
+  assert.ok(found, 'no table found');
+  const got = v.table.corners;
+  for (let i = 0; i < 4; i++) {
+    assert.ok(Math.abs(got[i].x - TRUE_QUAD[i][0]) < 0.04 &&
+              Math.abs(got[i].y - TRUE_QUAD[i][1]) < 0.04,
+      `corner ${i}: got ${got[i].x.toFixed(3)},${got[i].y.toFixed(3)} ` +
+      `want ${TRUE_QUAD[i][0]},${TRUE_QUAD[i][1]}`);
+  }
+});
+
+test('scanning finds a green table too', () => {
+  const v = withScene({ quad: TRUE_QUAD, table: [26, 122, 76] });
+  assert.ok(v.scanTable(), 'a green table should be found');
+});
+
+test('scanning does not settle on the floor when there is no table', () => {
+  const v = withScene({ quad: null });
+  assert.equal(v.scanTable(), null);
+});
+
+test('scanning rejects a table-coloured background filling the frame', () => {
+  const v = withScene({ quad: [[0, 0], [0, 1], [1, 1], [1, 0]] });
+  assert.equal(v.scanTable(), null, 'a full-frame region is the background, not a table');
+});
+
+test('a scanned table is placed, halves and boundary included', () => {
+  const v = withScene({ quad: TRUE_QUAD });
+  v.scanTable();
+  assert.ok(v.table.boundary, 'the out-of-bounds line is built');
+  assert.equal(v.sideOf({ x: 0.35, y: 0.6 }), 'A');
+  assert.equal(v.sideOf({ x: 0.65, y: 0.6 }), 'B');
+});

@@ -45,6 +45,7 @@ export class VisionReferee {
     this.showDebug = true;
     this.fps = 0;
     this.facing = 'environment';
+    this.tracking = false;      // only hunt for the ball during an active match
     this.bg = null;             // running background; the phone is stationary
     this.outMargin = 0.35;      // out-of-bounds line, as a fraction of table size
     this.onBallOut = () => {};
@@ -136,10 +137,19 @@ export class VisionReferee {
     }
     if (this.overlay.width !== vw) { this.overlay.width = vw; this.overlay.height = vh; }
 
-    this.pctx.drawImage(this.video, 0, 0, W, ph);
-    const frame = this.pctx.getImageData(0, 0, W, ph);
-    const found = this._findBall(frame, W, ph, t);
-    this._updateTrack(found, t);
+    // Only look for the ball while a match is being judged and the table is
+    // known. Before that there is no size or region gate, so the tracker
+    // would latch onto any movement in the room — which looked like the
+    // marker "going everywhere". Off the clock, just show the camera.
+    if (this.tracking && this.table) {
+      this.pctx.drawImage(this.video, 0, 0, W, ph);
+      const frame = this.pctx.getImageData(0, 0, W, ph);
+      const found = this._findBall(frame, W, ph, t);
+      this._updateTrack(found, t);
+    } else if (this.track) {
+      this.track = null;
+      this.trail.length = 0;
+    }
     this._draw();
 
     // Tracking a ball is worthless if it costs so much that frames are
@@ -620,6 +630,13 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     this.procWidth = Math.round(Math.min(288, Math.max(144, wanted)) / 8) * 8;
     this.minProcWidth = Math.max(128, Math.round(this.procWidth * 0.7));
     this.prev = null; this.bg = null;
+  }
+
+  /** Start or stop hunting for the ball. */
+  setTracking(on) {
+    this.tracking = on;
+    if (on) this.captureBackground();   // start from the table as it is right now
+    else { this.track = null; this.trail.length = 0; }
   }
 
   /** Remember the current frame as the empty-table background. */

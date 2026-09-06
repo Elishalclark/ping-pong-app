@@ -80,6 +80,12 @@ canvas#overlay{touch-action:none}  /* dragging a corner must not scroll the page
 .calib-actions{display:flex;gap:8px}
 .calib-actions button{min-height:40px;padding:8px 14px;font-weight:600}
 .rotate-hint{bottom:auto;top:0;background:rgba(210,153,34,.92);color:#1a1204;font-weight:600}
+/* A brief white flash when the table photo is taken, so it reads as a photo. */
+.flash{position:absolute;inset:0;z-index:6;background:#fff;pointer-events:none;
+  animation:flash .45s ease-out forwards}
+@keyframes flash{from{opacity:.9}to{opacity:0}}
+/* The scan button carries the primary weight during calibration. */
+.calib-actions #btnScan{white-space:nowrap}
 
 /* --- call banner --- */
 .call{margin:8px 12px;padding:10px 12px;border-radius:10px;background:var(--panel);

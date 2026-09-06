@@ -64,17 +64,20 @@ no browser bars, and works with no signal at all.
    cancellation and auto gain — phones enable all three by default, and all
    three are designed to remove exactly the kind of short click a ball makes.
 3. **Tap Start**, then **place the box**. Point the phone at the empty table
-   from where it is going to sit and tap **Scan table**: it finds the table in
-   that view and puts the box on it. Check the corners and correct them if it
-   is off. If the scan can't make out the table it says so, and you place the
-   box by hand: drag its middle to move it, drag a corner to reshape it, until
-   its edges sit on the playing surface. A magnifier appears under your finger so you can place
+   from where it is going to sit and tap **📷 Take photo of table**: it finds
+   the table in that photo and puts the box on it. Check the corners and
+   correct them if it is off, then **Use this box**. If it can't make out the
+   table it says so, and you place the box by hand: drag its middle to move
+   it, drag a corner to reshape it, until its edges sit on the playing
+   surface. A magnifier appears under your finger so you can place
    a corner precisely. **Swap ends** flips which end is Player A's. Tap
    **Done** when it fits. Each half is labelled **A** and **B** in the same
    colours as the scoreboard, so you can see at a glance whose end is whose.
    The box is what tells the referee where the table is, and it stays
    draggable afterwards — nudge a corner rather than starting over.
-4. **Begin match.** Keep the app in the foreground: a backgrounded phone stops
+4. **Begin match.** The ball marker only appears once a match is running —
+   before that there is nothing for it to track, and showing it would just
+   chase movement around the room. Keep the app in the foreground: a backgrounded phone stops
    the camera and microphone, and the app will tell you that play went
    unjudged rather than pretend otherwise.
 

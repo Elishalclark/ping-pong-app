@@ -66,19 +66,28 @@ function finishCalibration() {
 
 $('btnScan').addEventListener('click', () => {
   const hint = $('calibText');
+  flash();
+  buzz(30);
   const found = vision.scanTable();
   if (!found) {
-    hint.innerHTML = 'Couldn’t make out the table. Point the phone at it from where it will sit, with the table filling most of the picture — or drag the box on by hand.';
+    hint.innerHTML = 'Couldn’t find the table in that photo. Point the phone so the table fills most of the picture and tap <b>Take photo</b> again — or drag the box on by hand.';
     log('table scan found nothing', 'info', 0);
     return;
   }
-  // The scan frame is the table with nobody playing on it, which is exactly
-  // the reference the tracker wants for spotting the ball later.
+  // The photo is the table with nobody playing on it, which is exactly the
+  // reference the tracker wants for spotting the ball later.
   vision.captureBackground();
-  hint.innerHTML = `Found the table. Check the corners and <b>Swap ends</b> if A and B are the wrong way round.`;
-  log(`table scanned — ${Math.round(found.coverage * 100)}% of the view`, 'info', 1);
-  buzz(30);
+  hint.innerHTML = 'Got it. Check the box sits on the table — drag a corner to fix it, <b>Swap ends</b> if A and B are reversed — then <b>Use this box</b>.';
+  log(`table found — ${Math.round(found.coverage * 100)}% of the view`, 'info', 1);
 });
+
+function flash() {
+  const f = $('flash');
+  f.hidden = false;
+  // Restart the animation each time by forcing a reflow.
+  f.style.animation = 'none'; void f.offsetWidth; f.style.animation = '';
+  setTimeout(() => { f.hidden = true; }, 460);
+}
 
 $('btnCalibDone').addEventListener('click', finishCalibration);
 $('btnSwapEnds').addEventListener('click', () => {
@@ -219,11 +228,13 @@ $('btnRef').addEventListener('click', async () => {
   if (!referee) return;
   if (referee.active) {
     referee.stop();
+    vision.setTracking(false);
     releaseWakeLock();
     $('btnRef').textContent = 'Resume';
     say('Paused.', 'info');
   } else {
     primeSpeech();
+    vision.setTracking(true);
     referee.start();
     requestWakeLock();
     $('btnRef').textContent = 'Pause';

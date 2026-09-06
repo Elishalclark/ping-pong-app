@@ -120,17 +120,21 @@ The two sensors answer different questions, and neither is trusted alone.
   short click; a racket is lower and rings longer; a net touch is quiet and
   dull. Browsers too old for AudioWorklet (iOS before 14.5) fall back to a
   ScriptProcessor running the same detector with looser timing.
-- **Scanning finds the table.** The table's colour is not assumed: you point
-  the phone at the table, so whatever colour fills the middle of the frame is
-  the table — under whatever lighting the hall has. The scan samples that
-  centre colour and grows the connected region of pixels like it, comparing by
-  chromaticity plus a loose brightness band so the shading across a real table
-  doesn't split it, then fits a quadrilateral to the region's extremes. It
-  grows from the centre so the table the phone is aimed at anchors the region
-  rather than the floor. A region touching all four edges (a wall filling the
-  view), or one that doesn't fill the quad fitted to it, is rejected rather
-  than guessed at. This scans a worn green table in a dim hall, or a red or
-  grey club table, not just a vivid blue one. The scan frame doubles as the
+- **Scanning finds the table.** The table's colour is not assumed: whatever
+  colour fills the frame around a seed point is the table, under whatever
+  lighting the hall has. From that seed the scan grows the connected region of
+  similar-colour pixels (compared by chromaticity plus a loose brightness band,
+  so the shading across a real table doesn't split it), then cleans the region
+  before fitting a box: **morphological closing** bridges the thin gaps the
+  white net line and glare cut through the surface; **hole-filling** absorbs
+  glare spots and the ball; **erosion** shaves the edge so a bleed into a
+  similar-coloured floor doesn't push the corners out. Tapping the table seeds
+  the scan exactly where you tapped; the button with no tap runs a grid of
+  seeds and keeps the most table-shaped result, so it finds an off-centre
+  table too. A region that spans the whole frame (a wall or floor filling the
+  view) or that doesn't fill its box is rejected rather than guessed at. This
+  handles a worn green table with a net line in a dim hall, or a red or grey
+  club table, not just a vivid blue one. The scan frame doubles as the
   tracker's reference picture of the empty table.
 - **The camera answers *where*.** `js/vision.js` learns a slow-moving
   background of the scene — the phone is stationary, so most of the picture is

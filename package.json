@@ -1,0 +1,13 @@
+{
+  "name": "umpire",
+  "version": "0.1.0",
+  "description": "A ping pong referee that watches the table and listens for the ball",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "start:https": "node server.mjs --https",
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT",
+  "private": true
+}

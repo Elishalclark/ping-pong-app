@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="data:,">
+<title>Umpire — Ping Pong Referee</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<header class="bar">
+  <h1>Umpire</h1>
+  <div class="bar-status">
+    <span id="camStatus" class="pill off">camera</span>
+    <span id="micStatus" class="pill off">mic</span>
+    <span id="fpsStatus" class="pill">— fps</span>
+  </div>
+</header>
+
+<main>
+  <section class="stage">
+    <div class="video-wrap" id="videoWrap">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div id="calibHint" class="calib-hint" hidden></div>
+    </div>
+
+    <div class="meters">
+      <div class="meter">
+        <label>audio</label>
+        <div class="bar-track"><div id="levelBar" class="bar-fill"></div></div>
+      </div>
+      <div class="meter">
+        <label>onset</label>
+        <div class="bar-track"><div id="fluxBar" class="bar-fill flux"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="scoreboard" id="scoreboard">
+      <div class="team" id="teamA">
+        <div class="team-name">Player A<span class="serve-dot" id="serveA">●</span></div>
+        <div class="pts" id="ptsA">0</div>
+        <div class="games" id="gamesA">games 0</div>
+      </div>
+      <div class="team" id="teamB">
+        <div class="team-name">Player B<span class="serve-dot" id="serveB">●</span></div>
+        <div class="pts" id="ptsB">0</div>
+        <div class="games" id="gamesB">games 0</div>
+      </div>
+    </div>
+
+    <div class="call" id="callBanner">Press <b>Start</b>, then calibrate the table.</div>
+
+    <div class="controls">
+      <button id="btnStart" class="primary">Start camera + mic</button>
+      <button id="btnCalibrate">Calibrate table</button>
+      <button id="btnRef" disabled>Begin match</button>
+    </div>
+
+    <details class="group" open>
+      <summary>Manual override</summary>
+      <div class="controls tight">
+        <button data-award="A">Point A</button>
+        <button data-award="B">Point B</button>
+        <button id="btnLet">Let</button>
+        <button id="btnUndo">Undo</button>
+        <button id="btnReset" class="danger">Reset match</button>
+      </div>
+      <div class="controls tight">
+        <label class="inline">First server
+          <select id="firstServer"><option value="A">A</option><option value="B">B</option></select>
+        </label>
+        <label class="inline">Points per game
+          <select id="gamePoints"><option value="11">11</option><option value="21">21</option></select>
+        </label>
+        <label class="inline"><input type="checkbox" id="doubles"> Doubles</label>
+      </div>
+    </details>
+
+    <details class="group">
+      <summary>Detection settings</summary>
+      <div class="sliders">
+        <label>Bounce sensitivity <input type="range" id="onsetSens" min="1" max="12" step="0.1" value="4.5"><output id="onsetSensOut">4.5</output></label>
+        <label>Noise gate <input type="range" id="noiseGate" min="-70" max="-20" step="1" value="-48"><output id="noiseGateOut">-48 dB</output></label>
+        <label>Ball motion threshold <input type="range" id="motionThresh" min="6" max="60" step="1" value="22"><output id="motionThreshOut">22</output></label>
+        <label>Audio/video sync window <input type="range" id="syncWin" min="40" max="250" step="5" value="120"><output id="syncWinOut">120 ms</output></label>
+        <label class="inline"><input type="checkbox" id="speak" checked> Speak calls aloud</label>
+        <label class="inline"><input type="checkbox" id="showDebug" checked> Show tracking overlay</label>
+      </div>
+    </details>
+
+    <div class="log-head">
+      <h2>Play log</h2><button id="btnClearLog" class="link">clear</button>
+    </div>
+    <ol id="log" class="log"></ol>
+  </section>
+</main>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

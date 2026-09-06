@@ -67,9 +67,10 @@ no browser bars, and works with no signal at all.
    its middle to move it, drag a corner to reshape it, until its edges sit on
    the playing surface. A magnifier appears under your finger so you can place
    a corner precisely. **Swap ends** flips which end is Player A's. Tap
-   **Done** when it fits. The box is what tells the referee where the table
-   is and which half is which, and it stays draggable afterwards — nudge a
-   corner rather than starting over.
+   **Done** when it fits. Each half is labelled **A** and **B** in the same
+   colours as the scoreboard, so you can see at a glance whose end is whose.
+   The box is what tells the referee where the table is, and it stays
+   draggable afterwards — nudge a corner rather than starting over.
 4. **Begin match.** Keep the app in the foreground: a backgrounded phone stops
    the camera and microphone, and the app will tell you that play went
    unjudged rather than pretend otherwise.

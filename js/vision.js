@@ -285,9 +285,11 @@ export class VisionReferee {
     const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
     const net = [mid(corners[1], corners[2]), mid(corners[0], corners[3])];
     const centre = corners.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
+    const halfA = [corners[0], corners[1], net[0], net[1]];
+    const halfB = [net[1], net[0], corners[2], corners[3]];
     this.table = {
       corners: corners.map(c => ({ ...c })),
-      net, centre,
+      net, centre, halfA, halfB,
       sideOfA: sign(cross(net[0], net[1], corners[0])),
       boundary: expand(corners, centre, 1 + this.outMargin),
     };
@@ -359,19 +361,6 @@ export class VisionReferee {
   _draw() {
     const ctx = this.octx, W = this.overlay.width, H = this.overlay.height;
     ctx.clearRect(0, 0, W, H);
-    if (!this.showDebug) return;
-
-    // Handles that let a finger reshape the box.
-    const handles = this.table?.corners;
-    if (handles) {
-      ctx.lineWidth = 2;
-      for (const p of handles) {
-        ctx.strokeStyle = 'rgba(255,255,255,.95)';
-        ctx.fillStyle = 'rgba(74,163,255,.35)';
-        ctx.beginPath(); ctx.arc(p.x * W, p.y * H, 14, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
-      }
-    }
 
     if (this.table) {
       // The out-of-bounds line, drawn first so the table sits on top of it.
@@ -398,11 +387,22 @@ export class VisionReferee {
       ctx.beginPath(); ctx.moveTo(n0.x * W, n0.y * H); ctx.lineTo(n1.x * W, n1.y * H); ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = 'rgba(74,163,255,.9)'; ctx.font = '600 16px system-ui';
-      ctx.fillText('A', ((c[0].x + c[1].x) / 2) * W - 6, ((c[0].y + c[1].y) / 2) * H - 8);
-      ctx.fillStyle = 'rgba(255,138,74,.9)';
-      ctx.fillText('B', ((c[2].x + c[3].x) / 2) * W - 6, ((c[2].y + c[3].y) / 2) * H - 8);
+      // Whose half is whose, said plainly in the middle of each half and in
+      // the colours the scoreboard uses. Swap ends moves them.
+      this._halfLabel(ctx, W, H, this.table.halfA, 'A', '#4aa3ff');
+      this._halfLabel(ctx, W, H, this.table.halfB, 'B', '#ff8a4a');
+
+      // Handles, so it is obvious the corners can be dragged.
+      ctx.lineWidth = 2;
+      for (const p of c) {
+        ctx.strokeStyle = 'rgba(255,255,255,.95)';
+        ctx.fillStyle = 'rgba(74,163,255,.35)';
+        ctx.beginPath(); ctx.arc(p.x * W, p.y * H, 14, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
     }
+
+    if (!this.showDebug) return;
 
     if (this.trail.length > 1) {
       ctx.strokeStyle = 'rgba(255,220,80,.55)'; ctx.lineWidth = 2;
@@ -415,9 +415,45 @@ export class VisionReferee {
       ctx.beginPath(); ctx.arc(this.track.x * W, this.track.y * H, 10, 0, Math.PI * 2); ctx.stroke();
     }
   }
+
+  /** A big letter on a chip, centred in one half of the table. */
+  _halfLabel(ctx, W, H, half, text, colour) {
+    const cx = half.reduce((a, p) => a + p.x, 0) / half.length * W;
+    const cy = half.reduce((a, p) => a + p.y, 0) / half.length * H;
+    const size = Math.max(20, Math.min(W, H) * 0.075);
+
+    ctx.font = `700 ${size}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(text).width + size * 0.9;
+    const h = size * 1.5;
+
+    ctx.fillStyle = 'rgba(0,0,0,.45)';   // legible over any table colour
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 2;
+    roundRect(ctx, cx - w / 2, cy - h / 2, w, h, size * 0.3);
+    ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = colour;
+    ctx.fillText(text, cx, cy + size * 0.04);
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
+  }
 }
 
 // --- small geometry helpers ---------------------------------------------
+/** Rounded rectangle path, with a fallback for browsers without roundRect. */
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); return; }
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 /** Scale a polygon outward from a point. */
 function expand(pts, centre, k) {
   return pts.map(p => ({ x: centre.x + (p.x - centre.x) * k, y: centre.y + (p.y - centre.y) * k }));

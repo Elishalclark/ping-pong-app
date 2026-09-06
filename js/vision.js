@@ -29,7 +29,6 @@ export class VisionReferee {
     this.outMargin = 0.35;      // out-of-bounds line, as a fraction of table size
     this.onBallOut = () => {};
     this._wasInside = true;
-    this.pending = null;        // corners being placed during calibration
     this.procWidth = 192;       // adapts down on a phone that can't keep up
     this.onBallBounce = () => {};   // visual bounce (vertical direction reversal)
     this.onLost = () => {};
@@ -295,6 +294,25 @@ export class VisionReferee {
     return this.table;
   }
 
+  /** Slide the whole box, keeping its shape. Used to drag it onto the table. */
+  moveTable(dx, dy) {
+    if (!this.table) return;
+    this.setTable(this.table.corners.map(c => ({
+      x: Math.min(1, Math.max(0, c.x + dx)),
+      y: Math.min(1, Math.max(0, c.y + dy)),
+    })));
+  }
+
+  /** Flip which end of the box is Player A's, without redrawing the box. */
+  swapEnds() {
+    if (!this.table) return;
+    const c = this.table.corners;
+    this.setTable([c[2], c[3], c[0], c[1]]);
+  }
+
+  /** Is a point inside the box? Used to tell a whole-box drag from a corner. */
+  isInsideTable(p) { return this.isOnTable(p); }
+
   /** Move the out-of-bounds line in or out; 0 puts it on the table edge. */
   setOutMargin(m) {
     this.outMargin = m;
@@ -343,8 +361,8 @@ export class VisionReferee {
     ctx.clearRect(0, 0, W, H);
     if (!this.showDebug) return;
 
-    // Corners being placed, and the handles that let a finger move them.
-    const handles = this.pending?.length ? this.pending : this.table?.corners;
+    // Handles that let a finger reshape the box.
+    const handles = this.table?.corners;
     if (handles) {
       ctx.lineWidth = 2;
       for (const p of handles) {

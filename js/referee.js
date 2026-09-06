@@ -23,6 +23,7 @@ export class Referee {
     this.onEvent = () => {};
 
     this._lastEventAt = 0;
+    this.deafUntil = 0;     // ignore the microphone while the umpire is talking
     this._lastContactSide = null;
     this._pendingOut = null;
 
@@ -43,6 +44,9 @@ export class Referee {
 
   handleOnset(o) {
     if (!this.active) return;
+    // The phone's own voice reaches its own microphone. Without this, calling
+    // the score is itself heard as ball contact.
+    if (o.wallTime < this.deafUntil || performance.now() < this.deafUntil) return;
     const pos = this.vision.positionAt(o.wallTime, this.syncWindow);
 
     if (!pos) {

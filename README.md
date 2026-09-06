@@ -5,8 +5,10 @@ table. It watches through the camera, listens for the ball through the
 microphone, and calls the match: services, double bounces, volleys, net cords,
 balls out, scoring, service rotation, games and match.
 
-Every ruling is announced out loud, written to a play log with a confidence
-figure, and can be overridden or undone with a thumb.
+Every ruling is called out loud the way an umpire does — "Point A. 5, 3. A to
+serve." — written to a play log with a confidence figure, and can be
+overridden or undone with a thumb. The app goes deaf while it is speaking, so
+it never mistakes its own voice for the ball.
 
 It is built for a phone first: portrait and landscape layouts, tap-and-drag
 table calibration with a magnifier, a screen that won't sleep mid-match, and
@@ -58,12 +60,13 @@ no browser bars, and works with no signal at all.
    The app deliberately turns off the browser's noise suppression, echo
    cancellation and auto gain — phones enable all three by default, and all
    three are designed to remove exactly the kind of short click a ball makes.
-3. **Tap Start**, then **calibrate**: tap the four table corners in the order
-   the prompt asks for, starting at Player A's end nearest you and going
-   around the table. A magnifier appears under your finger so you can place a
-   corner precisely, and every corner stays draggable afterwards — nudge one
-   rather than starting over. This is what tells the referee which half is
-   which.
+3. **Tap Start**, then **place the box**. A box appears over the picture: drag
+   its middle to move it, drag a corner to reshape it, until its edges sit on
+   the playing surface. A magnifier appears under your finger so you can place
+   a corner precisely. **Swap ends** flips which end is Player A's. Tap
+   **Done** when it fits. The box is what tells the referee where the table
+   is and which half is which, and it stays draggable afterwards — nudge a
+   corner rather than starting over.
 4. **Begin match.** Keep the app in the foreground: a backgrounded phone stops
    the camera and microphone, and the app will tell you that play went
    unjudged rather than pretend otherwise.
@@ -119,6 +122,22 @@ The two sensors answer different questions, and neither is trusted alone.
 - **`js/rules.js` is the rulebook**, a pure state machine with no knowledge of
   cameras or microphones, driven entirely by those physical events. It's the
   part that's fully covered by tests (`npm test`).
+
+## Faults and rally points are not the same thing
+
+A service error and a rally lost in play both cost the point, but an umpire
+does not call them the same way, and neither does this app.
+
+Every service error — the ball missing the server's own half, bouncing twice
+on it, going into the net, leaving play before reaching the far half, or being
+served out of turn — is called as a **fault**, named aloud as one ("Fault.
+Point B. 1 all. B to serve."), shown in red, and **counted against the server**
+in the scoreboard. Anything that happens once the ball is live is a rally
+point, with no fault recorded.
+
+A fault always belongs to whoever is serving, so the manual **Fault** button
+needs no player chosen — it charges the current server. Undo restores the
+fault count along with the score.
 
 ## The out-of-bounds line
 

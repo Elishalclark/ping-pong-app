@@ -188,3 +188,100 @@ test('an award to an invalid side is refused', () => {
   assert.equal(calls[0].type, 'info');
   assert.deepEqual(e.score, { A: 0, B: 0 });
 });
+
+test('a serve that bounces on the server’s own half and goes out is a fault', () => {
+  const e = engine(); serve(e);
+  const calls = rally(e,
+    { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' },
+    { type: 'out' });                        // never reached B's half
+  assert.deepEqual(e.score, { A: 0, B: 1 });
+  const call = calls.at(-1);
+  assert.equal(call.kind, 'fault');
+  assert.equal(call.offender, 'A');
+  assert.deepEqual(e.faults, { A: 1, B: 0 });
+});
+
+test('a shot that leaves play without touching the table at all is the striker’s point against', () => {
+  const e = engine(); serve(e);
+  rally(e,
+    { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' },
+    { type: 'hit', side: 'B' }, { type: 'out' });
+  assert.deepEqual(e.score, { A: 1, B: 0 });
+});
+
+test('the umpire calls the score with the server’s first', () => {
+  const e = engine({ firstServer: 'A' });
+  assert.match(e.spokenScore(), /Love all/);
+  e.award('B');                              // 0-1, and service passes at 2
+  assert.match(e.spokenScore(), /^0, 1/, 'server A still, so A’s score leads');
+  e.award('B');                              // 0-2, B serves
+  assert.equal(e.server, 'B');
+  assert.match(e.spokenScore(), /^2, 0/, 'B serving, so B’s score leads');
+});
+
+test('deuce and advantage are called by name', () => {
+  const e = engine();
+  for (let i = 0; i < 10; i++) { e.award('A'); e.award('B'); }
+  assert.match(e.spokenScore(), /Deuce/);
+  e.award('A');
+  assert.match(e.spokenScore(), /Advantage A/);
+});
+
+// --- faults vs rally points ---------------------------------------------
+
+test('every service error is recorded as a fault against the server', () => {
+  const cases = [
+    ['service missed the server’s half',
+      [{ type: 'hit', side: 'A' }, { type: 'bounce', side: 'B' }]],
+    ['service bounced twice on the server’s half',
+      [{ type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'A' }]],
+    ['service into the net',
+      [{ type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'net' }, { type: 'out' }]],
+  ];
+  for (const [label, evs] of cases) {
+    const e = engine(); serve(e);
+    const calls = rally(e, ...evs);
+    const point = calls.find(c => c.type === 'point');
+    assert.equal(point.kind, 'fault', `${label} should be a fault`);
+    assert.equal(point.offender, 'A', `${label} should be charged to the server`);
+    assert.deepEqual(e.faults, { A: 1, B: 0 }, label);
+    assert.deepEqual(e.score, { A: 0, B: 1 }, label);
+  }
+});
+
+test('losing a rally in play is not a fault', () => {
+  const e = engine(); serve(e);
+  const calls = rally(e,
+    { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' },
+    { type: 'hit', side: 'B' }, { type: 'out' });      // B's return never landed
+  const point = calls.find(c => c.type === 'point');
+  assert.equal(point.kind, 'rally');
+  assert.equal(point.offender, null);
+  assert.deepEqual(e.faults, { A: 0, B: 0 }, 'no fault is recorded for a rally');
+});
+
+test('a let is not a fault', () => {
+  const e = engine(); serve(e);
+  rally(e, { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' },
+    { type: 'net' }, { type: 'bounce', side: 'B' });
+  assert.deepEqual(e.faults, { A: 0, B: 0 });
+  assert.deepEqual(e.score, { A: 0, B: 0 });
+});
+
+test('faults follow the server, not one player', () => {
+  const e = engine({ firstServer: 'A' });
+  serve(e); rally(e, { type: 'hit', side: 'A' }, { type: 'bounce', side: 'B' });  // A faults
+  e.award('B');                                        // 0-2, service passes to B
+  assert.equal(e.server, 'B');
+  serve(e); rally(e, { type: 'hit', side: 'B' }, { type: 'bounce', side: 'A' });  // B faults
+  assert.deepEqual(e.faults, { A: 1, B: 1 });
+});
+
+test('undo restores the fault count as well as the score', () => {
+  const e = engine(); serve(e);
+  rally(e, { type: 'hit', side: 'A' }, { type: 'bounce', side: 'B' });
+  assert.deepEqual(e.faults, { A: 1, B: 0 });
+  e.undo();
+  assert.deepEqual(e.faults, { A: 0, B: 0 });
+  assert.deepEqual(e.score, { A: 0, B: 0 });
+});

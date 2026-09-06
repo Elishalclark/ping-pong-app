@@ -7,6 +7,7 @@ const els = {
   video: $('video'), overlay: $('overlay'), loupe: $('loupe'), hint: $('calibHint'),
   rotate: $('rotateHint'), cam: $('camStatus'), mic: $('micStatus'), fps: $('fpsStatus'),
   ptsA: $('ptsA'), ptsB: $('ptsB'), gamesA: $('gamesA'), gamesB: $('gamesB'),
+  faultsA: $('faultsA'), faultsB: $('faultsB'),
   teamA: $('teamA'), teamB: $('teamB'), call: $('callBanner'), log: $('log'),
   level: $('levelBar'), flux: $('fluxBar'),
 };
@@ -23,37 +24,47 @@ let started = false;
 // magnified loupe of the area under it. Corners stay draggable after they are
 // placed: nudging one is far easier than starting the whole process again.
 
-const CALIB_STEPS = [
-  'Tap the table corner at <b>A’s end, nearest you</b>.',
-  'Now the <b>far corner at A’s end</b>.',
-  'Now the <b>far corner at B’s end</b>.',
-  'Now the <b>corner at B’s end nearest you</b>.',
+// The box starts as a sensible shape in the middle of the view; you drag it
+// onto the table rather than trying to hit four corners with a fingertip in a
+// prescribed order. Whole-box drag for position, corner drag for shape.
+const DEFAULT_BOX = [
+  { x: 0.22, y: 0.72 },   // A end, near the camera
+  { x: 0.32, y: 0.42 },   // A end, far
+  { x: 0.68, y: 0.42 },   // B end, far
+  { x: 0.78, y: 0.72 },   // B end, near
 ];
-const HANDLE_R = 0.045;   // grab radius, as a fraction of the video's width
+const HANDLE_R = 0.05;    // grab radius for a corner, as a fraction of width
 let calibrating = false;
-let corners = [];
-let dragIdx = -1;
+let dragIdx = -1;         // corner being dragged
+let dragBox = null;       // whole-box drag origin
 
 function beginCalibration() {
   if (!started) return say('Tap <b>Start</b> first.', 'fault');
   calibrating = true;
-  corners = [];
   dragIdx = -1;
-  vision.table = null;
-  vision.pending = corners;
+  dragBox = null;
+  if (!vision.table) vision.setTable(DEFAULT_BOX.map(c => ({ ...c })));
   els.hint.hidden = false;
-  els.hint.innerHTML = CALIB_STEPS[0];
   $('btnRef').disabled = true;
+  els.overlay.classList.add('calibrating');
+  say('Place the box over the playing surface — drag the middle to move it, a corner to reshape it.', 'info');
 }
 
 function finishCalibration() {
-  vision.setTable(corners);
-  vision.pending = null;
   calibrating = false;
   els.hint.hidden = true;
+  els.overlay.classList.remove('calibrating');
   $('btnRef').disabled = false;
-  say('Table set — drag a corner to adjust. Tap <b>Begin match</b> when ready.', 'info');
+  say('Table set. Tap <b>Begin</b> when the players are ready.', 'info');
+  log('table box placed', 'info', 1);
 }
+
+$('btnCalibDone').addEventListener('click', finishCalibration);
+$('btnSwapEnds').addEventListener('click', () => {
+  vision.swapEnds();
+  render(referee ? referee.engine.state : { score: { A: 0, B: 0 }, games: { A: 0, B: 0 }, server: 'A' });
+  log('ends swapped', 'info', 1);
+});
 
 // Map a pointer to normalised video coordinates, undoing the letterboxing
 // that object-fit: contain applies.
@@ -68,39 +79,41 @@ function toVideo(e) {
 }
 
 els.overlay.addEventListener('pointerdown', e => {
+  if (!vision.table) return;
   const p = toVideo(e);
   if (p.x < -0.05 || p.x > 1.05 || p.y < -0.05 || p.y > 1.05) return;
   els.overlay.setPointerCapture(e.pointerId);
 
-  const pts = calibrating ? corners : vision.table?.corners;
-  if (pts) {
-    const near = pts.findIndex(c => Math.hypot(c.x - p.x, (c.y - p.y) * 0.75) < HANDLE_R);
-    if (near >= 0) { dragIdx = near; drawLoupe(pts[near]); return; }
-  }
-  if (calibrating && corners.length < 4) {
-    corners.push({ x: clamp01(p.x), y: clamp01(p.y) });
-    dragIdx = corners.length - 1;
-    els.hint.innerHTML = corners.length < 4 ? CALIB_STEPS[corners.length] : 'Drag any corner to adjust, then lift your finger.';
-    drawLoupe(corners[dragIdx]);
-  }
+  // A corner wins over the box: the handles sit on the box's own edge, and
+  // reshaping is the finer of the two gestures.
+  const near = vision.table.corners.findIndex(
+    c => Math.hypot(c.x - p.x, (c.y - p.y) * 0.75) < HANDLE_R);
+  if (near >= 0) { dragIdx = near; drawLoupe(vision.table.corners[near]); return; }
+  if (calibrating && vision.isInsideTable(p)) dragBox = { ...p };
 });
 
 els.overlay.addEventListener('pointermove', e => {
-  if (dragIdx < 0) return;
+  if (dragIdx < 0 && !dragBox) return;
   e.preventDefault();
   const p = toVideo(e);
-  const pts = calibrating ? corners : vision.table.corners;
-  pts[dragIdx] = { x: clamp01(p.x), y: clamp01(p.y) };
-  if (!calibrating) vision.setTable(vision.table.corners);
-  drawLoupe(pts[dragIdx]);
+  if (dragIdx >= 0) {
+    const corners = vision.table.corners.map((c, i) =>
+      i === dragIdx ? { x: clamp01(p.x), y: clamp01(p.y) } : c);
+    vision.setTable(corners);
+    drawLoupe(corners[dragIdx]);
+  } else {
+    vision.moveTable(p.x - dragBox.x, p.y - dragBox.y);
+    dragBox = { ...p };
+  }
 });
 
 const endDrag = () => {
-  if (dragIdx < 0) return;
+  if (dragIdx < 0 && !dragBox) return;
+  const wasCorner = dragIdx >= 0;
   dragIdx = -1;
+  dragBox = null;
   els.loupe.hidden = true;
-  if (calibrating && corners.length === 4) finishCalibration();
-  else if (!calibrating) log('table corner adjusted', 'info', 1);
+  if (!calibrating && wasCorner) log('table corner adjusted', 'info', 1);
 };
 els.overlay.addEventListener('pointerup', endDrag);
 els.overlay.addEventListener('pointercancel', endDrag);
@@ -134,6 +147,7 @@ const clamp01 = v => Math.min(1, Math.max(0, v));
 
 $('btnStart').addEventListener('click', async () => {
   if (started) return;
+  primeSpeech();
   $('btnStart').disabled = true;
   say('Asking for the camera and microphone…', 'info');
 
@@ -188,10 +202,11 @@ $('btnRef').addEventListener('click', async () => {
     $('btnRef').textContent = 'Resume';
     say('Paused.', 'info');
   } else {
+    primeSpeech();
     referee.start();
     requestWakeLock();
     $('btnRef').textContent = 'Pause';
-    announce(`${referee.engine.server} to serve. Love all.`);
+    announce(`Play. ${referee.engine.spokenScore()}`);
     say(`<b>${referee.engine.server} to serve.</b> Watching every play.`, 'info');
   }
 });
@@ -262,19 +277,30 @@ function onCall(call, state) {
   render(state);
   if (call.type === 'info') { log(call.reason, 'info', call.confidence); return; }
 
+  const isFault = call.kind === 'fault';
   const label = {
-    point: `Point ${call.side} — ${call.reason}`,
+    point: isFault
+      ? `Fault, ${call.offender} — ${call.reason}. Point ${call.side}`
+      : `Point ${call.side} — ${call.reason}`,
     let: `Let — ${call.reason}`,
     game: call.reason,
     match: call.reason,
   }[call.type] || call.reason;
-  const cls = call.type === 'let' ? 'let' : 'point';
+  const cls = call.type === 'let' ? 'let' : isFault ? 'fault' : 'point';
 
   say(`<b>${label}</b>${call.confidence < 0.55 ? '<br><i>low confidence — check me</i>' : ''}`, cls);
   log(label, cls, call.confidence);
   buzz(call.type === 'match' ? [90, 60, 90, 60, 180] : call.type === 'game' ? [90, 60, 140] : 45);
 
-  announce(call.type === 'point' ? `${label}. ${referee.engine.scoreCall()}` : label);
+  // An umpire names the point, then calls the score. Game and match speak for
+  // themselves.
+  // A fault is named as a fault: an umpire does not call a service error and
+  // a rally lost in play the same way.
+  if (call.type === 'point' && isFault) announce(`Fault. Point ${call.side}. ${referee.engine.spokenScore()}`);
+  else if (call.type === 'point') announce(`Point ${call.side}. ${referee.engine.spokenScore()}`);
+  else if (call.type === 'game') announce(`Game to ${call.side}. ${referee.engine.spokenScore()}`);
+  else if (call.type === 'match') announce(`Game and match to ${call.side}.`);
+  else announce(label);
 }
 
 function onEvent(ev) {
@@ -293,6 +319,11 @@ function render(state) {
   els.ptsB.textContent = state.score.B;
   els.gamesA.textContent = state.games.A;
   els.gamesB.textContent = state.games.B;
+  const faults = state.faults ?? { A: 0, B: 0 };
+  els.faultsA.textContent = faults.A;
+  els.faultsB.textContent = faults.B;
+  els.faultsA.classList.toggle('some', faults.A > 0);
+  els.faultsB.classList.toggle('some', faults.B > 0);
   els.teamA.classList.toggle('serving', state.server === 'A');
   els.teamB.classList.toggle('serving', state.server === 'B');
 }
@@ -315,12 +346,40 @@ function log(text, cls = 'info', confidence = 0) {
   while (els.log.children.length > 200) els.log.lastChild.remove();
 }
 
+let speechReady = false;
+
+/**
+ * iOS refuses to speak unless speech has been started from a user gesture at
+ * least once, so the first tap primes it with an empty utterance.
+ */
+function primeSpeech() {
+  if (speechReady || !window.speechSynthesis) return;
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    speechSynthesis.speak(u);
+    speechReady = true;
+  } catch { /* no speech on this browser; calls still show on screen */ }
+}
+
 function announce(text) {
   if (!$('speak').checked || !window.speechSynthesis) return;
   const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.05;
+  u.rate = 1.02;
+  u.pitch = 1;
+  // Go deaf while talking, and for a moment after: the microphone is live and
+  // would otherwise hear the umpire as a bounce.
+  u.onstart = () => { if (referee) referee.deafUntil = Infinity; };
+  const listenAgain = () => {
+    if (referee) referee.deafUntil = performance.now() + 250;
+  };
+  u.onend = listenAgain;
+  u.onerror = listenAgain;
   speechSynthesis.cancel();
   speechSynthesis.speak(u);
+  // If speech never starts (a muted phone, a browser that drops it), don't
+  // leave the referee deaf for the rest of the match.
+  setTimeout(() => { if (referee && referee.deafUntil === Infinity) listenAgain(); }, 4000);
 }
 
 // =========================================================================
@@ -341,6 +400,15 @@ $('btnLet').addEventListener('click', () => {
   if (!referee) return;
   referee.engine.callLet().forEach(c => onCall(c, referee.engine.state));
 });
+$('btnFault').addEventListener('click', () => {
+  if (!referee) return;
+  // A fault is always the server's, so there is nothing to choose.
+  const server = referee.engine.server;
+  referee.engine.award(other(server), 'called by the umpire', 'fault')
+    .forEach(c => onCall(c, referee.engine.state));
+});
+const other = s => (s === 'A' ? 'B' : 'A');
+
 $('btnUndo').addEventListener('click', () => {
   if (!referee) return;
   if (referee.engine.undo()) { render(referee.engine.state); log('undo', 'info', 1); buzz(25); }
@@ -405,6 +473,10 @@ $('btnInstall').addEventListener('click', async () => {
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
+
+// A handle on the working parts, for debugging on a device where there is no
+// console to hand and for driving the app from tests.
+window.umpire = { get vision() { return vision; }, get audio() { return audio; }, get referee() { return referee; } };
 
 render({ score: { A: 0, B: 0 }, games: { A: 0, B: 0 }, server: 'A' });
 checkOrientation();

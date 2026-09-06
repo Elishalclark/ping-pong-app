@@ -20,6 +20,10 @@ export class RulesEngine {
     this.firstServer = firstServer;
     this.score = { A: 0, B: 0 };
     this.games = { A: 0, B: 0 };
+    // Service faults, counted against the player who committed them. They are
+    // not a separate scoring mechanism — a fault costs the point outright —
+    // but an umpire distinguishes one from a rally lost in play, and so do we.
+    this.faults = { A: 0, B: 0 };
     this.server = firstServer;
     this.phase = 'awaiting-serve';
     this.rally = null;
@@ -31,6 +35,7 @@ export class RulesEngine {
     return {
       score: { ...this.score },
       games: { ...this.games },
+      faults: { ...this.faults },
       server: this.server,
       phase: this.phase,
       matchOver: this.matchOver,
@@ -82,7 +87,7 @@ export class RulesEngine {
       r.lastHitter = side;
       r.bouncesSinceHit = [];
       if (side !== this.server) {
-        return this._point(other(side), 'served out of turn', ev.confidence);
+        return this._point(other(side), 'served out of turn', ev.confidence, 'fault');
       }
       return [{ type: 'info', reason: 'service struck', confidence: ev.confidence }];
     }
@@ -122,14 +127,14 @@ export class RulesEngine {
 
       if (r.serveBounces.length === 1) {
         if (side !== this.server) {
-          return this._point(other(this.server), 'service missed the server’s half', ev.confidence);
+          return this._point(other(this.server), 'service missed the server’s half', ev.confidence, 'fault');
         }
         return [{ type: 'info', reason: 'service bounce, own half', confidence: ev.confidence }];
       }
 
       if (r.serveBounces.length === 2) {
         if (side === this.server) {
-          return this._point(other(this.server), 'service bounced twice on the server’s half', ev.confidence);
+          return this._point(other(this.server), 'service bounced twice on the server’s half', ev.confidence, 'fault');
         }
         if (r.netTouched) {
           r.netTouched = false;
@@ -172,17 +177,31 @@ export class RulesEngine {
     const r = this.rally;
     if (!r.lastHitter) return [];
     if (this.phase === 'serve' && r.strokes === 1 && r.netTouched && r.serveBounces.length < 2) {
-      return this._point(other(this.server), 'service into the net', ev.confidence);
+      return this._point(other(this.server), 'service into the net', ev.confidence, 'fault');
     }
     // Who a ball leaving play belongs to depends entirely on whether it had
     // already landed. If it bounced on the far half first, the striker did
     // everything asked of them and it is the receiver who let it go by;
     // only a ball that never landed is the striker's mistake.
-    const landed = r.bouncesSinceHit.length > 0 && r.bouncesSinceHit[0] !== r.lastHitter;
-    if (landed) {
+    // On the service stroke, any of these is a service fault rather than a
+    // rally lost: the ball never became live.
+    const serving = this.phase === 'serve' && r.strokes === 1;
+    const firstBounce = r.bouncesSinceHit[0];
+    if (firstBounce && firstBounce !== r.lastHitter) {
+      // It landed on the far half, so the stroke was good and the receiver
+      // simply let it go by.
       return this._point(r.lastHitter, 'ball went past without a return', ev.confidence);
     }
-    return this._point(other(r.lastHitter), 'ball out of play', ev.confidence);
+    if (firstBounce === r.lastHitter) {
+      // It touched the table on the striker's own half and then left play
+      // without ever reaching the other side.
+      return this._point(other(r.lastHitter),
+        serving ? 'service went out without reaching the far half' : 'bounced on their own half and went out',
+        ev.confidence, serving ? 'fault' : 'rally');
+    }
+    return this._point(other(r.lastHitter),
+      serving ? 'service went out' : 'ball out without touching the table',
+      ev.confidence, serving ? 'fault' : 'rally');
   }
 
   // Rally fizzled out with nothing conclusive (ball lost, play stopped).
@@ -201,7 +220,7 @@ export class RulesEngine {
     return [{ type: 'let', reason, confidence }];
   }
 
-  _point(side, reason, confidence = 1) {
+  _point(side, reason, confidence = 1, kind = 'rally') {
     // Never score for nobody. If a call cannot be attributed to a player, the
     // honest outcome is no call — silently incrementing an undefined side
     // corrupts the match and shows the umpire "Point null".
@@ -210,15 +229,18 @@ export class RulesEngine {
       this.rally = null;
       return [{ type: 'info', reason: `${reason}, but it could not be attributed — no call`, confidence: 0 }];
     }
+    const offender = kind === 'fault' ? other(side) : null;
     this.history.push({
       kind: 'point', side, reason,
-      score: { ...this.score }, games: { ...this.games }, server: this.server,
+      score: { ...this.score }, games: { ...this.games },
+      faults: { ...this.faults }, server: this.server,
     });
     this.score[side] += 1;
+    if (offender) this.faults[offender] += 1;
     this.phase = 'awaiting-serve';
     this.rally = null;
 
-    const calls = [{ type: 'point', side, reason, confidence }];
+    const calls = [{ type: 'point', side, reason, confidence, kind, offender }];
     const g = this._checkGame();
     if (g) calls.push(...g);
     else this._updateServer();
@@ -226,8 +248,8 @@ export class RulesEngine {
   }
 
   // Public entry for a human overriding the machine.
-  award(side, reason = 'umpire call') {
-    return this._point(side, reason, 1);
+  award(side, reason = 'umpire call', kind = 'rally') {
+    return this._point(side, reason, 1, kind);
   }
   callLet(reason = 'umpire call') {
     return this._let(reason, 1);
@@ -239,6 +261,7 @@ export class RulesEngine {
     if (last.kind === 'point') {
       this.score = { ...last.score };
       this.games = { ...last.games };
+      this.faults = { ...last.faults };
       this.server = last.server;
       this.matchOver = false;
     }
@@ -277,6 +300,20 @@ export class RulesEngine {
     const total = A + B;
     const turns = deuce ? total : Math.floor(total / 2);
     this.server = turns % 2 === 0 ? this.firstServer : other(this.firstServer);
+  }
+
+  /** The score as an umpire says it: server's score first, then the receiver's. */
+  spokenScore() {
+    const { A, B } = this.score;
+    if (this.matchOver) return 'Match over.';
+    const [srv, rec] = this.server === 'A' ? [A, B] : [B, A];
+    if (A >= this.gamePoints - 1 && B >= this.gamePoints - 1) {
+      if (A === B) return `Deuce. ${this.server} to serve.`;
+      return `Advantage ${A > B ? 'A' : 'B'}. ${this.server} to serve.`;
+    }
+    if (A === 0 && B === 0) return `Love all. ${this.server} to serve.`;
+    if (srv === rec) return `${srv} all. ${this.server} to serve.`;
+    return `${srv}, ${rec}. ${this.server} to serve.`;
   }
 
   scoreCall() {

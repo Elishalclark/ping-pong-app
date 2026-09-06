@@ -41,15 +41,23 @@
           <span class="team-name">A<i class="serve-dot">●</i></span>
           <span class="pts" id="ptsA">0</span>
           <span class="games" id="gamesA">0</span>
+          <span class="faults" id="faultsA">0</span>
         </div>
         <div class="team" id="teamB">
           <span class="team-name">B<i class="serve-dot">●</i></span>
           <span class="pts" id="ptsB">0</span>
           <span class="games" id="gamesB">0</span>
+          <span class="faults" id="faultsB">0</span>
         </div>
       </div>
 
-      <div id="calibHint" class="calib-hint" hidden></div>
+      <div id="calibHint" class="calib-hint" hidden>
+        <span id="calibText">Drag the box onto the table so its edges sit on the playing surface.</span>
+        <span class="calib-actions">
+          <button id="btnSwapEnds">Swap ends</button>
+          <button id="btnCalibDone" class="primary">Done</button>
+        </span>
+      </div>
       <div id="rotateHint" class="rotate-hint" hidden>Turn the phone sideways for a better view of the table</div>
     </div>
   </section>
@@ -66,7 +74,7 @@
   <div class="actions">
     <button id="btnStart" class="primary big">Start</button>
     <button id="btnCalibrate" class="big">Calibrate</button>
-    <button id="btnRef" class="big" disabled>Begin match</button>
+    <button id="btnRef" class="big" disabled>Begin</button>
   </div>
 
   <nav class="tabs" role="tablist">
@@ -80,9 +88,11 @@
       <button data-award="A" class="big award a">Point A</button>
       <button data-award="B" class="big award b">Point B</button>
       <button id="btnLet" class="big">Let</button>
+      <button id="btnFault" class="big fault">Fault</button>
       <button id="btnUndo" class="big">Undo</button>
     </div>
-    <p class="note">Every automatic call can be corrected here. Low-confidence calls are flagged — you have the final say.</p>
+    <p class="note">Every automatic call can be corrected here. Low-confidence calls are flagged — you have the final say.
+    <b>Fault</b> charges a service fault to whoever is serving, which loses them the point.</p>
   </section>
 
   <section class="tabpanel" id="tab-log" role="tabpanel">

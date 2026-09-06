@@ -127,12 +127,31 @@ The two sensors answer different questions, and neither is trusted alone.
   background of the scene — the phone is stationary, so most of the picture is
   the same frame after frame — and scores each pixel of a downscaled frame by
   how far it stands out from that background, weighted by brightness. It takes
-  the best small, round, compact cluster, predicted forward from the previous
-  two frames. Background subtraction beats simple frame differencing here for
-  two reasons: differencing leaves a ghost where the ball *was* as well as
-  where it is, and it loses the ball entirely whenever the ball slows down.
-  Blobs that are too long and thin, or too sparse, are rejected as arms and
-  shirt edges.
+  the best small, round, compact cluster. Background subtraction beats simple
+  frame differencing here for two reasons: differencing leaves a ghost where
+  the ball *was* as well as where it is, and it loses the ball entirely
+  whenever the ball slows down. Blobs that are too long and thin, or too
+  sparse, are rejected as arms and shirt edges.
+- **A motion filter turns detections into a track.** Rather than snapping to
+  wherever the detector fires each frame, positions feed a constant-velocity
+  (alpha-beta) filter that estimates where the ball is *and how fast it is
+  going*, smoothly. This buys three things that matter on a real rally:
+  - **Distractors are gated out.** A detection far from where the ball is
+    predicted to be is treated as a distractor and ignored, so a single stray
+    blob can't hijack the track. But because the ball reverses on every paddle
+    hit, a *run* of unexpected detections is read as a genuine change of
+    course and the track re-seeds on it within two frames — the distinction is
+    that coasting is for when the ball is not seen, not for when it is seen
+    somewhere surprising.
+  - **It coasts through occlusion.** When an arm briefly hides the ball, the
+    track carries forward on its last velocity instead of dying at the first
+    missed frame, and only gives up after a real gap.
+  - **Bounces read cleanly.** The downward-to-upward flip is taken from the
+    smoothed vertical velocity, which both misses fewer real bounces and
+    invents far fewer from frame-to-frame jitter than a raw single-frame test.
+  Position lookup for audio sync interpolates between the two frames that
+  bracket the sound's timestamp, placing the ball where it actually was at
+  that millisecond rather than at the nearest frame.
 - **Size is what says "that is a ball".** Once the box is on the table the app
   knows the real thing is 2.74 m by 1.525 m, so it can work out how many
   pixels across a 40 mm ball must be at any point in the picture — smaller at

@@ -15,6 +15,19 @@
 const TABLE_WIDTH_M = 1.525;
 const BALL_M = 0.04;
 
+// Alpha-beta (constant-velocity) tracking filter. Alpha corrects position
+// toward each measurement; beta corrects the velocity estimate. Tuned to be
+// responsive enough for a smash yet steady enough that one noisy frame doesn't
+// throw the track. All positions are normalised 0..1, velocities per second.
+const ALPHA = 0.6;
+const BETA = 0.32;
+const CONFIRM = 3;        // detections before a track is trusted
+const V_MAX = 9;          // clamp on estimated speed (frame-widths / second)
+const LOST_CONFIRMED = 420;   // ms of no detection before a real track dies
+const LOST_TENTATIVE = 140;   // an unconfirmed track dies fast
+const REACQUIRE_MS = 120;     // after this long coasting, a far blob re-acquires
+const BOUNCE_VY = 0.35;       // filtered vertical speed either side of a bounce
+
 export class VisionReferee {
   constructor(video, overlay) {
     this.video = video;
@@ -257,31 +270,148 @@ export class VisionReferee {
   }
 
   _updateTrack(found, t) {
-    if (!found) {
-      if (this.track && t - this._lastSeen > 400) {
-        const last = this.track;
-        this.track = null;
-        this.trail.length = 0;
-        this.onLost(last);
-      }
+    if (found && this._accept(found, t)) {
+      // The detection is where the ball was predicted to be: filter it in.
+      this._rejectStreak = 0;
+      this._lastReject = null;
+      this._integrate(found, t);
       return;
     }
-    const prev = this.track;
-    let vx = 0, vy = 0;
-    if (prev && t - prev.t > 0 && t - prev.t < 200) {
-      const dt = (t - prev.t) / 1000;
-      vx = (found.x - prev.x) / dt;
-      vy = (found.y - prev.y) / dt;
-      // A downward-then-upward flip is a bounce as far as the camera can tell.
-      if (prev.vy > 0.12 && vy < -0.12) {
-        this.onBallBounce({ x: found.x, y: found.y, t, side: this.sideOf(found), onTable: this.isOnTable(found) });
+    if (found) {
+      // A detection the model didn't expect. One such frame is treated as a
+      // distractor and ignored — this is what kills a single-frame blip. But
+      // the ball reverses on every paddle hit and every bounce, and a real
+      // reversal produces a *run* of unexpected detections, not one. So the
+      // second consistent surprise is trusted over the model and the track is
+      // re-seeded on it, with velocity taken from the two surprises. The
+      // distinction that matters: coasting is for when the ball is *not seen*
+      // (occlusion); a ball that IS seen, just not where predicted, means the
+      // model is wrong, not that the ball vanished.
+      const lr = this._lastReject;
+      this._lastReject = { x: found.x, y: found.y, t };
+      this._rejectStreak = (this._rejectStreak || 0) + 1;
+      if (this._rejectStreak >= 2 && lr && t > lr.t) {
+        this._reseed(found, lr, t);
+        this._rejectStreak = 0;
+        this._lastReject = null;
+        return;
       }
     }
-    this.track = { x: found.x, y: found.y, vx, vy, t, conf: found.conf };
-    this._checkBoundary(found, t);
+    this._coast(t);
+  }
+
+  /** Restart the track on a detection the model had stopped following. */
+  _reseed(m, prevReject, t) {
+    const dt = clamp((t - prevReject.t) / 1000, 1 / 125, 0.1);
+    let vx = (m.x - prevReject.x) / dt;
+    let vy = (m.y - prevReject.y) / dt;
+    const speed = Math.hypot(vx, vy);
+    if (speed > V_MAX) { const k = V_MAX / speed; vx *= k; vy *= k; }
+    this.track = { x: m.x, y: m.y, vx, vy, t, conf: m.conf ?? 0.5,
+                   hits: CONFIRM, misses: 0, confirmed: true };
+    this._checkBoundary({ x: m.x, y: m.y }, t);
     this._lastSeen = t;
-    this.trail.push({ x: found.x, y: found.y, t });
-    if (this.trail.length > 40) this.trail.shift();
+    this._pushTrail(m.x, m.y, t, false);
+  }
+
+  /**
+   * Would this detection be accepted, or is it a distractor? A freshly
+   * acquired track accepts everything while it learns its velocity; a
+   * confirmed one rejects anything implausibly far from where the ball is
+   * predicted to be — that is what stops a waving arm from stealing the
+   * track — unless it has been coasting long enough that the ball has
+   * genuinely gone somewhere new.
+   */
+  _accept(m, t) {
+    const p = this.track;
+    if (!p || p.hits < CONFIRM) return true;
+    const dt = Math.max(1 / 125, (t - p.t) / 1000);
+    const xp = p.x + p.vx * dt, yp = p.y + p.vy * dt;
+    const r = Math.hypot(m.x - xp, m.y - yp);
+    const speed = Math.hypot(p.vx, p.vy);
+    const gate = 0.1 + speed * dt * 2.5 + 0.05 * p.misses;
+    if (r <= gate) return true;
+    return t - this._lastSeen > REACQUIRE_MS;
+  }
+
+  _integrate(m, t) {
+    const prev = this.track;
+    if (!prev || t - this._lastSeen > LOST_CONFIRMED) {
+      // Fresh acquisition: no velocity yet, so start at rest and let the next
+      // few frames establish it.
+      this.track = { x: m.x, y: m.y, vx: 0, vy: 0, t, conf: m.conf ?? 0.5,
+                     hits: 1, misses: 0, confirmed: false };
+      this._lastSeen = t;
+      this._pushTrail(m.x, m.y, t, false);
+      return;
+    }
+
+    const dt = clamp((t - prev.t) / 1000, 1 / 125, 0.1);
+    // Predict, then correct toward the measurement.
+    const xp = prev.x + prev.vx * dt;
+    const yp = prev.y + prev.vy * dt;
+    const rx = m.x - xp, ry = m.y - yp;
+
+    // While the track is still young the velocity estimate is unreliable, so
+    // seed it directly from the frame-to-frame difference instead of nudging
+    // a near-zero value; alpha-beta smoothing takes over once established.
+    let vx, vy;
+    if (prev.hits < 2) {
+      vx = (m.x - prev.x) / dt;
+      vy = (m.y - prev.y) / dt;
+    } else {
+      vx = prev.vx + (BETA / dt) * rx;
+      vy = prev.vy + (BETA / dt) * ry;
+    }
+    const speed = Math.hypot(vx, vy);
+    if (speed > V_MAX) { const k = V_MAX / speed; vx *= k; vy *= k; }
+
+    const x = xp + ALPHA * rx;
+    const y = yp + ALPHA * ry;
+    const hits = prev.hits + 1;
+    const confirmed = prev.confirmed || hits >= CONFIRM;
+
+    // A bounce is the ball's downward motion reversing to upward. Reading it
+    // from the smoothed velocity, with clear thresholds either side, is far
+    // steadier than the old single-frame sign test, which both missed real
+    // bounces and invented them from jitter.
+    if (confirmed && prev.vy > BOUNCE_VY && vy < -BOUNCE_VY * 0.4) {
+      this.onBallBounce({ x, y, t, side: this.sideOf({ x, y }), onTable: this.isOnTable({ x, y }) });
+    }
+
+    this.track = { x, y, vx, vy, t, conf: m.conf ?? prev.conf, hits, misses: 0, confirmed };
+    this._checkBoundary({ x, y }, t);
+    this._lastSeen = t;
+    this._pushTrail(x, y, t, false);
+  }
+
+  _coast(t) {
+    const prev = this.track;
+    if (!prev) return;
+    const gap = t - this._lastSeen;
+    const limit = prev.confirmed ? LOST_CONFIRMED : LOST_TENTATIVE;
+    if (gap > limit) {
+      this.track = null;
+      this.trail.length = 0;
+      this._rejectStreak = 0;
+      this._lastReject = null;
+      this.onLost(prev);
+      return;
+    }
+    // Carry the ball forward on its last known motion, bleeding off a little
+    // speed so a lost track drifts to a stop rather than flying away.
+    const dt = clamp((t - prev.t) / 1000, 1 / 125, 0.1);
+    const x = prev.x + prev.vx * dt;
+    const y = prev.y + prev.vy * dt;
+    this.track = { ...prev, x, y, t, misses: prev.misses + 1,
+                   vx: prev.vx * 0.985, vy: prev.vy * 0.985 };
+    this._checkBoundary({ x, y }, t);
+    this._pushTrail(x, y, t, true);
+  }
+
+  _pushTrail(x, y, t, predicted) {
+    this.trail.push({ x, y, t, predicted });
+    if (this.trail.length > 48) this.trail.shift();
   }
 
   /**
@@ -302,16 +432,30 @@ export class VisionReferee {
 
   /** Ball position at (or nearest to) a moment in time — used to place a sound. */
   positionAt(wallTime, windowMs = 120) {
-    let best = null, bestDt = Infinity;
-    for (const p of this.trail) {
-      const dt = Math.abs(p.t - wallTime);
-      if (dt < bestDt) { bestDt = dt; best = p; }
+    const tr = this.trail;
+    if (!tr.length) return null;
+
+    // The sound is timestamped to the millisecond, but frames land ~16-33 ms
+    // apart. Interpolating between the two trail samples that bracket the
+    // moment places the ball where it actually was when the bounce happened,
+    // not merely at the nearest frame — which is what decides whose half it is.
+    let before = null, after = null;
+    for (const p of tr) {
+      if (p.t <= wallTime && (!before || p.t > before.t)) before = p;
+      if (p.t >= wallTime && (!after || p.t < after.t)) after = p;
     }
-    if (!best || bestDt > windowMs) return null;
-    return { ...best, dt: bestDt };
+    if (before && after && after.t > before.t) {
+      const f = (wallTime - before.t) / (after.t - before.t);
+      return { x: before.x + (after.x - before.x) * f,
+               y: before.y + (after.y - before.y) * f,
+               t: wallTime, dt: 0, interpolated: true };
+    }
+    const near = before || after;
+    const dt = Math.abs(near.t - wallTime);
+    return dt <= windowMs ? { ...near, dt } : null;
   }
 
-  // --- table geometry ----------------------------------------------------
+  // --- table geometry  // --- table geometry ----------------------------------------------------
 
   /**
    * corners: 4 normalised points, walked around the table starting at the
@@ -320,6 +464,7 @@ export class VisionReferee {
    */
   setTable(corners) {
     const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const net = [mid(corners[1], corners[2]), mid(corners[0], corners[3])];
     const centre = corners.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
     const halfA = [corners[0], corners[1], net[0], net[1]];
@@ -748,6 +893,7 @@ function expand(pts, centre, k) {
 }
 
 const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const cross = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 const sign = v => (v >= 0 ? 1 : -1);
 

@@ -67,17 +67,18 @@ test('setOutMargin moves the line without recalibrating the table', () => {
 
 // --- the crossing rule --------------------------------------------------
 
-/** Feed a straight line of positions through the tracker. */
+/** Feed a straight line of positions through the tracker on a monotonic clock. */
 function fly(v, from, to, steps = 8) {
   const calls = [];
   v.onBallOut = info => calls.push(info);
   for (let i = 0; i <= steps; i++) {
     const f = i / steps;
+    v.__clock = (v.__clock ?? 1000) + 16;
     v._updateTrack({
       x: from.x + (to.x - from.x) * f,
       y: from.y + (to.y - from.y) * f,
-      t: 1000 + i * 16, conf: 1,
-    }, 1000 + i * 16);
+      t: v.__clock, conf: 1,
+    }, v.__clock);
   }
   return calls;
 }
@@ -115,9 +116,10 @@ test('leaving, returning and leaving again is called twice', () => {
 test('position lookup matches a sound to where the ball was', () => {
   const v = make();
   fly(v, { x: 0.3, y: 0.55 }, { x: 0.7, y: 0.55 });
-  const near = v.positionAt(1064, 120);
+  const mid = v.__clock - 64;                    // a moment mid-flight
+  const near = v.positionAt(mid, 120);
   assert.ok(near, 'a moment inside the window resolves');
-  const far = v.positionAt(5000, 120);
+  const far = v.positionAt(v.__clock + 4000, 120);
   assert.equal(far, null, 'a moment with no ball near it does not');
 });
 
@@ -303,4 +305,96 @@ test('a scanned table is placed, halves and boundary included', () => {
   assert.ok(v.table.boundary, 'the out-of-bounds line is built');
   assert.equal(v.sideOf({ x: 0.35, y: 0.6 }), 'A');
   assert.equal(v.sideOf({ x: 0.65, y: 0.6 }), 'B');
+});
+
+// --- the motion filter --------------------------------------------------
+
+/** Feed one detection (or a miss, when m is null) at the next clock tick. */
+function step(v, m, dtMs = 16) {
+  v.__clock = (v.__clock ?? 1000) + dtMs;
+  v._updateTrack(m ? { ...m, t: v.__clock, conf: 1 } : null, v.__clock);
+  return v.track;
+}
+
+test('a single-frame outlier does not hijack a confirmed track', () => {
+  const v = make();
+  // Establish a track drifting slowly to the right.
+  let x = 0.4;
+  for (let i = 0; i < 6; i++) { step(v, { x, y: 0.55 }); x += 0.02; }
+  const before = { x: v.track.x, y: v.track.y };
+  // One wild detection across the table, then the real ball continues.
+  step(v, { x: 0.8, y: 0.3 });
+  assert.ok(Math.abs(v.track.x - before.x) < 0.1,
+    `an outlier moved the track from ${before.x.toFixed(2)} to ${v.track.x.toFixed(2)}`);
+  x += 0.02;
+  step(v, { x, y: 0.55 });
+  assert.ok(Math.abs(v.track.y - 0.55) < 0.06, 'the track stayed on the real ball');
+});
+
+test('a real change of direction is followed within two frames', () => {
+  const v = make();
+  let x = 0.4;
+  for (let i = 0; i < 6; i++) { step(v, { x, y: 0.55 }); x += 0.03; }
+  // The ball reverses sharply (a paddle hit): two frames later the track
+  // should be moving back the other way, not stuck coasting forward.
+  step(v, { x: x - 0.03, y: 0.55 });
+  step(v, { x: x - 0.08, y: 0.55 });
+  assert.ok(v.track.vx < 0, `velocity should have reversed, is ${v.track.vx.toFixed(2)}`);
+});
+
+test('the track coasts through a brief occlusion instead of dying', () => {
+  const v = make();
+  let x = 0.4;
+  for (let i = 0; i < 6; i++) { step(v, { x, y: 0.5 }); x += 0.04; }
+  const vx = v.track.vx;
+  assert.ok(vx > 0, 'moving right before the occlusion');
+  // Two frames with no detection at all (an arm passes in front).
+  step(v, null); step(v, null);
+  assert.ok(v.track, 'the track survived the occlusion');
+  assert.ok(v.track.x > x, 'and was carried forward by its velocity');
+});
+
+test('the track is dropped after a long disappearance', () => {
+  const v = make();
+  for (let i = 0; i < 5; i++) step(v, { x: 0.5, y: 0.5 });
+  let lost = null;
+  v.onLost = t => (lost = t);
+  for (let i = 0; i < 40; i++) step(v, null);   // ~640 ms of nothing
+  assert.equal(v.track, null, 'the track was dropped');
+  assert.ok(lost, 'onLost fired');
+});
+
+test('velocity is smoothed, not the raw frame-to-frame jump', () => {
+  const v = make();
+  // A steady glide with one jittery sample in the middle.
+  const xs = [0.40, 0.44, 0.48, 0.585, 0.56, 0.60];   // 4th sample overshoots
+  for (const x of xs) step(v, { x, y: 0.5 });
+  // The smoothed speed should sit near the true glide (~0.04/frame ≈ 2.5/s),
+  // nowhere near the instantaneous spike the jittery sample implies.
+  assert.ok(v.track.vx > 0 && v.track.vx < 6,
+    `smoothed vx ${v.track.vx.toFixed(2)} should not chase the spike`);
+});
+
+test('a bounce is read from the smoothed vertical velocity', () => {
+  const v = make();
+  const bounces = [];
+  v.onBallBounce = b => bounces.push(b);
+  // A parabola over the table: down, then up, past the confirmation count.
+  const ys = [0.30, 0.42, 0.52, 0.60, 0.66, 0.70, 0.66, 0.60, 0.52, 0.42];
+  let x = 0.45;
+  for (const y of ys) { step(v, { x, y }); x += 0.01; }
+  assert.equal(bounces.length, 1, `expected one bounce, got ${bounces.length}`);
+  assert.ok(bounces[0].y > 0.6, 'the bounce was recorded near the bottom of the arc');
+});
+
+test('position lookup interpolates between frames for audio sync', () => {
+  const v = make();
+  step(v, { x: 0.30, y: 0.5 });
+  step(v, { x: 0.50, y: 0.5 });     // two frames 16 ms apart
+  const t0 = v.trail[v.trail.length - 2].t;
+  const a = v.trail[v.trail.length - 2].x, b = v.trail[v.trail.length - 1].x;
+  const at = v.positionAt(t0 + 8, 60);   // exactly between the two samples
+  assert.ok(at && at.interpolated, 'the lookup interpolated');
+  assert.ok(Math.abs(at.x - (a + b) / 2) < 1e-6,
+    `interpolated x ${at?.x.toFixed(3)} should be the midpoint of ${a.toFixed(3)} and ${b.toFixed(3)}`);
 });

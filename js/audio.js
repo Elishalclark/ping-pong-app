@@ -19,11 +19,15 @@ export class AudioReferee {
     this.timeOffset = 0;   // performance.now() ms at audio currentTime 0
     this.settings = { sensitivity: 4.5, gateDb: -48 };
     this.running = false;
+    this.mode = null;   // 'worklet' | 'fallback'
   }
 
   async start() {
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
+        // All three of these are designed to remove short, sharp, repetitive
+        // sounds — which is exactly what a ball hitting a table is. They stay
+        // off even though phones enable them by default.
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
@@ -31,33 +35,65 @@ export class AudioReferee {
       },
     });
 
-    this.ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new Ctx({ latencyHint: 'interactive' });
+    // iOS starts every context suspended until a gesture unlocks it; start()
+    // is only ever called from a tap, so this is where it comes alive.
     await this.ctx.resume();
     this.timeOffset = performance.now() - this.ctx.currentTime * 1000;
 
     const src = this.ctx.createMediaStreamSource(this.stream);
+    const mute = this.ctx.createGain();
+    mute.gain.value = 0;   // keeps the graph pulling without making a sound
 
-    const url = new URL('./onset-processor.js', import.meta.url);
-    await this.ctx.audioWorklet.addModule(url);
-    this.node = new AudioWorkletNode(this.ctx, 'onset-processor', {
-      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
-    });
-    this.node.port.onmessage = e => this._handle(e.data);
+    try {
+      const url = new URL('./onset-processor.js', import.meta.url);
+      await this.ctx.audioWorklet.addModule(url);
+      this.node = new AudioWorkletNode(this.ctx, 'onset-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      this.node.port.onmessage = e => this._handle(e.data);
+      this.mode = 'worklet';
+    } catch {
+      // Older iOS Safari has no AudioWorklet. ScriptProcessor is deprecated
+      // and runs on the main thread, so timing is looser, but a working
+      // referee with softer timing beats no referee at all.
+      await this._startFallback();
+    }
 
     src.connect(this.node);
-    // Keep the node pulled by the graph without making noise.
-    const mute = this.ctx.createGain();
-    mute.gain.value = 0;
     this.node.connect(mute).connect(this.ctx.destination);
 
     this.applySettings(this.settings);
     this.running = true;
-    return true;
+    return this.mode;
+  }
+
+  async _startFallback() {
+    const { TransientDetector } = await import('./detector.js');
+    const det = new TransientDetector({ sampleRate: this.ctx.sampleRate });
+    const node = this.ctx.createScriptProcessor(512, 1, 1);
+    node.onaudioprocess = e => {
+      const ch = e.inputBuffer.getChannelData(0);
+      const { level, onset } = det.process(ch, this.ctx.currentTime, this.settings);
+      this._handle({ type: 'level', ...level });
+      if (onset) this._handle({ type: 'onset', ...onset });
+    };
+    this.node = node;
+    this.mode = 'fallback';
+  }
+
+  /** Phones suspend audio in the background; call this on the way back. */
+  async resume() {
+    if (this.ctx?.state === 'suspended') {
+      await this.ctx.resume();
+      this.timeOffset = performance.now() - this.ctx.currentTime * 1000;
+    }
   }
 
   applySettings(s) {
     Object.assign(this.settings, s);
-    if (!this.node) return;
+    if (this.mode !== 'worklet' || !this.node) return;  // fallback reads them directly
     const p = this.node.parameters;
     p.get('sensitivity').value = this.settings.sensitivity;
     p.get('gateDb').value = this.settings.gateDb;
@@ -65,6 +101,7 @@ export class AudioReferee {
 
   stop() {
     this.running = false;
+    if (this.node) this.node.onaudioprocess = null;
     this.stream?.getTracks().forEach(t => t.stop());
     this.node?.disconnect();
     this.ctx?.close();

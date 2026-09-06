@@ -7,7 +7,6 @@
 // two frames keeps it locked on through a fast rally and rejects the much
 // larger blobs made by arms and shirts.
 
-const PW = 192; // processing width; height follows the video aspect
 
 export class VisionReferee {
   constructor(video, overlay) {
@@ -25,6 +24,9 @@ export class VisionReferee {
     this.motionThreshold = 22;
     this.showDebug = true;
     this.fps = 0;
+    this.facing = 'environment';
+    this.pending = null;        // corners being placed during calibration
+    this.procWidth = 192;       // adapts down on a phone that can't keep up
     this.onBallBounce = () => {};   // visual bounce (vertical direction reversal)
     this.onLost = () => {};
     this._lastSeen = 0;
@@ -37,9 +39,13 @@ export class VisionReferee {
     // Every constraint here is "ideal": a hard minimum frame rate makes
     // getUserMedia fail outright on cameras that won't promise it, and a slow
     // camera is still far better than no camera. Ask high, take what we get.
+    // A phone does this work on battery: start smaller on a small screen and
+    // let the frame loop adapt from there.
+    if (Math.min(screen.width, screen.height) < 500) this.procWidth = 160;
+
     const wanted = {
       video: {
-        facingMode: 'environment',
+        facingMode: this.facing,
         width: { ideal: 1280 },
         height: { ideal: 720 },
         frameRate: { ideal: 60 },
@@ -53,11 +59,35 @@ export class VisionReferee {
       this.stream = await navigator.mediaDevices.getUserMedia({ video: true });
     }
     this.settings = this.stream.getVideoTracks()[0]?.getSettings?.() ?? {};
+    if (this.settings.facingMode) this.facing = this.settings.facingMode;
     this.video.srcObject = this.stream;
     await this.video.play();
     this._running = true;
     requestAnimationFrame(this._loop);
     return this.stream;
+  }
+
+  /** Is there more than one camera to switch between? */
+  async hasMultipleCameras() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return devices.filter(d => d.kind === 'videoinput').length > 1;
+    } catch { return false; }
+  }
+
+  /** Swap between the rear and front cameras, keeping the tracker's state. */
+  async flipCamera() {
+    this.facing = this.facing === 'environment' ? 'user' : 'environment';
+    this.stream?.getTracks().forEach(t => t.stop());
+    this.prev = null;
+    this.trail.length = 0;
+    this.track = null;
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: this.facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+    });
+    this.video.srcObject = this.stream;
+    await this.video.play();
+    return this.facing;
   }
 
   stop() {
@@ -76,15 +106,25 @@ export class VisionReferee {
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
     if (!vw) return;
 
-    const ph = Math.round((PW * vh) / vw);
-    if (this.proc.width !== PW) { this.proc.width = PW; this.proc.height = ph; this.prev = null; }
+    const W = this.procWidth;
+    const ph = Math.round((W * vh) / vw);
+    if (this.proc.width !== W || this.proc.height !== ph) {
+      this.proc.width = W; this.proc.height = ph; this.prev = null;
+    }
     if (this.overlay.width !== vw) { this.overlay.width = vw; this.overlay.height = vh; }
 
-    this.pctx.drawImage(this.video, 0, 0, PW, ph);
-    const frame = this.pctx.getImageData(0, 0, PW, ph);
-    const found = this._findBall(frame, PW, ph, t);
+    this.pctx.drawImage(this.video, 0, 0, W, ph);
+    const frame = this.pctx.getImageData(0, 0, W, ph);
+    const found = this._findBall(frame, W, ph, t);
     this._updateTrack(found, t);
     this._draw();
+
+    // Tracking a ball is worthless if it costs so much that frames are
+    // dropped, so trade resolution for frame rate until the phone keeps up.
+    const cost = performance.now() - t;
+    this._cost = this._cost ? this._cost * 0.9 + cost * 0.1 : cost;
+    if (this._cost > 11 && this.procWidth > 128) this.procWidth -= 16;
+    else if (this._cost < 4 && this.procWidth < 224) this.procWidth += 8;
 
     this._frames++;
     if (t - this._fpsAt > 500) {
@@ -232,6 +272,18 @@ export class VisionReferee {
     const ctx = this.octx, W = this.overlay.width, H = this.overlay.height;
     ctx.clearRect(0, 0, W, H);
     if (!this.showDebug) return;
+
+    // Corners being placed, and the handles that let a finger move them.
+    const handles = this.pending?.length ? this.pending : this.table?.corners;
+    if (handles) {
+      ctx.lineWidth = 2;
+      for (const p of handles) {
+        ctx.strokeStyle = 'rgba(255,255,255,.95)';
+        ctx.fillStyle = 'rgba(74,163,255,.35)';
+        ctx.beginPath(); ctx.arc(p.x * W, p.y * H, 14, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
+    }
 
     if (this.table) {
       const c = this.table.corners;

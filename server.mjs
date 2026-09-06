@@ -17,11 +17,20 @@ const TYPES = {
   '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
 };
 
 const handler = async (req, res) => {
-  const url = new URL(req.url, 'http://x');
-  const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
+  let rel;
+  try {
+    // A malformed request path (say "//", which parses as protocol-relative)
+    // must not be allowed to take the server down.
+    const url = new URL(req.url, 'http://localhost');
+    rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('bad request');
+  }
   const path = join(ROOT, rel === '/' ? 'index.html' : rel);
   try {
     const body = await readFile(path);

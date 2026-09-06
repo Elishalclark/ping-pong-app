@@ -64,13 +64,27 @@ function finishCalibration() {
   log('table box placed', 'info', 1);
 }
 
-$('btnScan').addEventListener('click', () => {
+$('btnScan').addEventListener('click', () => runScan());
+
+// Tap the table in the picture to scan from that exact point.
+function scanAt(pt) { runScan(pt); }
+
+function runScan(seed) {
   const hint = $('calibText');
   flash();
   buzz(30);
-  const found = vision.scanTable();
+  let found = null;
+  try {
+    found = vision.scanTable(seed);
+  } catch (err) {
+    hint.innerHTML = `Couldn’t read the camera (${err.name || 'error'}). Drag the box onto the table by hand instead.`;
+    log('scan error: ' + (err.message || err), 'info', 0);
+    return;
+  }
   if (!found) {
-    hint.innerHTML = 'Couldn’t find the table in that photo. Point the phone so the table fills most of the picture and tap <b>Take photo</b> again — or drag the box on by hand.';
+    hint.innerHTML = seed
+      ? 'That spot didn’t look like the table. Tap right on the playing surface, or drag the box on by hand.'
+      : 'Couldn’t find the table automatically. <b>Tap the table</b> in the picture, or drag the box on by hand.';
     log('table scan found nothing', 'info', 0);
     return;
   }
@@ -79,7 +93,7 @@ $('btnScan').addEventListener('click', () => {
   vision.captureBackground();
   hint.innerHTML = 'Got it. Check the box sits on the table — drag a corner to fix it, <b>Swap ends</b> if A and B are reversed — then <b>Use this box</b>.';
   log(`table found — ${Math.round(found.coverage * 100)}% of the view`, 'info', 1);
-});
+}
 
 function flash() {
   const f = $('flash');
@@ -108,11 +122,14 @@ function toVideo(e) {
   };
 }
 
+let downAt = null, moved = false;
 els.overlay.addEventListener('pointerdown', e => {
   if (!vision.table) return;
   const p = toVideo(e);
   if (p.x < -0.05 || p.x > 1.05 || p.y < -0.05 || p.y > 1.05) return;
   els.overlay.setPointerCapture(e.pointerId);
+  downAt = { ...p };
+  moved = false;
 
   // A corner wins over the box: the handles sit on the box's own edge, and
   // reshaping is the finer of the two gestures.
@@ -123,6 +140,10 @@ els.overlay.addEventListener('pointerdown', e => {
 });
 
 els.overlay.addEventListener('pointermove', e => {
+  if (downAt) {
+    const p0 = toVideo(e);
+    if (Math.hypot(p0.x - downAt.x, p0.y - downAt.y) > 0.02) moved = true;
+  }
   if (dragIdx < 0 && !dragBox) return;
   e.preventDefault();
   const p = toVideo(e);
@@ -137,13 +158,20 @@ els.overlay.addEventListener('pointermove', e => {
   }
 });
 
-const endDrag = () => {
-  if (dragIdx < 0 && !dragBox) return;
+const endDrag = e => {
   const wasCorner = dragIdx >= 0;
+  const wasDraggingBox = !!dragBox;
+  const tapPoint = downAt;
+  const wasTap = !moved;
   dragIdx = -1;
   dragBox = null;
+  downAt = null;
   els.loupe.hidden = true;
-  if (!calibrating && wasCorner) log('table corner adjusted', 'info', 1);
+  if (!calibrating && wasCorner) { log('table corner adjusted', 'info', 1); return; }
+  // A tap on the table during calibration — not a corner, not a drag — seeds
+  // the scan there. This is the reliable path: the person points at the table
+  // instead of the app guessing where it is.
+  if (calibrating && wasTap && !wasCorner && tapPoint) scanAt(tapPoint);
 };
 els.overlay.addEventListener('pointerup', endDrag);
 els.overlay.addEventListener('pointercancel', endDrag);

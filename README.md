@@ -64,12 +64,13 @@ no browser bars, and works with no signal at all.
    cancellation and auto gain — phones enable all three by default, and all
    three are designed to remove exactly the kind of short click a ball makes.
 3. **Tap Start**, then **place the box**. Point the phone at the empty table
-   from where it is going to sit and tap **📷 Take photo of table**: it finds
-   the table in that photo and puts the box on it. Check the corners and
-   correct them if it is off, then **Use this box**. If it can't make out the
-   table it says so, and you place the box by hand: drag its middle to move
-   it, drag a corner to reshape it, until its edges sit on the playing
-   surface. A magnifier appears under your finger so you can place
+   and either tap **📷 Take photo of table** (it guesses the table is in the
+   middle of the frame) or — more reliably — just **tap the table** in the
+   picture. Tapping seeds the scan from that exact spot and colour, so it works
+   even when the table is off to one side or the floor is a similar colour.
+   Check the box, correct any corner by dragging, then **Use this box**. You
+   can always place the box entirely by hand: drag its middle to move it, a
+   corner to reshape it. A magnifier appears under your finger so you can place
    a corner precisely. **Swap ends** flips which end is Player A's. Tap
    **Done** when it fits. Each half is labelled **A** and **B** in the same
    colours as the scoreboard, so you can see at a glance whose end is whose.

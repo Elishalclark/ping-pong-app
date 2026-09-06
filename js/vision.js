@@ -566,7 +566,7 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
    *
    * Returns { corners, coverage } or null when nothing table-like is found.
    */
-  scanTable() {
+  scanTable(seed = { x: 0.5, y: 0.55 }) {
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
     if (!vw) return null;
 
@@ -581,23 +581,26 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     // table — under whatever lighting they have. Sample that colour and grow
     // the region of pixels like it. This works for a worn green table in a
     // dim hall as well as a vivid blue one, where a fixed hue range failed.
-    const cx0 = (W * 0.35) | 0, cx1 = (W * 0.65) | 0;
-    const cy0 = (H * 0.4) | 0, cy1 = (H * 0.7) | 0;
+    // Sample the colour of a small patch around the seed point — the middle of
+    // the frame by default, or exactly where the user tapped the table.
+    const sx = Math.round(clamp(seed.x, 0.05, 0.95) * W);
+    const sy = Math.round(clamp(seed.y, 0.05, 0.95) * H);
+    const rad = Math.max(3, (W * 0.06) | 0);
     let sr = 0, sg = 0, sb = 0, sn = 0;
-    for (let y = cy0; y < cy1; y++) {
-      for (let x = cx0; x < cx1; x++) {
+    for (let y = Math.max(0, sy - rad); y < Math.min(H, sy + rad); y++) {
+      for (let x = Math.max(0, sx - rad); x < Math.min(W, sx + rad); x++) {
         const i = (y * W + x) * 4;
         sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; sn++;
       }
     }
-    const seed = { r: sr / sn, g: sg / sn, b: sb / sn };
+    const seedColor = { r: sr / sn, g: sg / sn, b: sb / sn };
 
     // Compare by chromaticity plus a loose brightness band, so the shading
     // that falls across a real table (near edge bright, far edge dark) does
     // not split it into two different "colours".
     const chroma = (r, g, b) => { const t = r + g + b + 1; return [r / t, g / t]; };
-    const [scr, scg] = chroma(seed.r, seed.g, seed.b);
-    const seedLum = (seed.r + seed.g + seed.b) / 3;
+    const [scr, scg] = chroma(seedColor.r, seedColor.g, seedColor.b);
+    const seedLum = (seedColor.r + seedColor.g + seedColor.b) / 3;
     const CHROMA_TOL = 0.055;    // how different in colour a pixel may be
     const LUM_TOL = 95;          // and in brightness
 
@@ -617,10 +620,10 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
     // Grow from the centre specifically, so if the floor happens to match too
     // it is the table (which the phone is aimed at) that anchors the region.
-    const seedIdx = (((H * 0.55) | 0) * W) + ((W * 0.5) | 0);
-    let region = regionContaining(mask, W, H, seedIdx);
-    if (!region || region.size < W * H * 0.03) region = largestRegion(mask, W, H);
-    if (!region || region.size < W * H * 0.03) return null;
+    const seedIdx = sy * W + sx;
+    let region = mask[seedIdx] ? regionContaining(mask, W, H, seedIdx) : null;
+    if (!region || region.size < W * H * 0.02) region = largestRegion(mask, W, H);
+    if (!region || region.size < W * H * 0.02) return null;
 
     // Fit a quad by taking the extreme points along both diagonals — for a
     // rectangle seen in perspective these land on its four corners.

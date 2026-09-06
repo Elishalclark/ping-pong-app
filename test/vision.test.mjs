@@ -344,6 +344,19 @@ test('scanning works in dim light', () => {
   assert.ok(v.scanTable(), 'a dim table should still scan');
 });
 
+test('an off-centre table is found by seeding the scan where the user taps', () => {
+  // A table pushed to the right of the frame: the centre guess lands on floor,
+  // but a tap on the table itself grows the right region.
+  const quad = [[0.55, 0.7], [0.6, 0.4], [0.9, 0.4], [0.95, 0.7]];
+  const v = withScene({ quad, table: [150, 40, 40], floor: [40, 60, 40] });
+  const byCentre = v.scanTable();                // seeds at 0.5, 0.55 → floor
+  assert.equal(byCentre, null, 'the centre guess should miss an off-centre table');
+  const v2 = withScene({ quad, table: [150, 40, 40], floor: [40, 60, 40] });
+  const byTap = v2.scanTable({ x: 0.75, y: 0.55 });   // tap on the table
+  assert.ok(byTap, 'a tap on the table should find it');
+  assert.ok(v2.table.corners[3].x > 0.8, 'and the box sits over the real table');
+});
+
 test('a scanned table is placed, halves and boundary included', () => {
   const v = withScene({ quad: TRUE_QUAD });
   v.scanTable();

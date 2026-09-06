@@ -344,17 +344,62 @@ test('scanning works in dim light', () => {
   assert.ok(v.scanTable(), 'a dim table should still scan');
 });
 
-test('an off-centre table is found by seeding the scan where the user taps', () => {
-  // A table pushed to the right of the frame: the centre guess lands on floor,
-  // but a tap on the table itself grows the right region.
+test('an off-centre table is found — by the grid search and, exactly, by a tap', () => {
+  const quad = [[0.55, 0.7], [0.6, 0.4], [0.9, 0.4], [0.95, 0.7]];
+  // The multi-seed search should find it wherever it sits in the frame.
+  const v = withScene({ quad, table: [150, 40, 40], floor: [40, 60, 40] });
+  assert.ok(v.scanTable(), 'the grid search should find an off-centre table');
+  assert.ok(v.table.corners[3].x > 0.8, 'and place the box over it');
+  // A tap on the table nails it regardless of where it is.
+  const v2 = withScene({ quad, table: [150, 40, 40], floor: [40, 60, 40] });
+  assert.ok(v2.scanTable({ x: 0.75, y: 0.55 }), 'a tap on the table finds it');
+  assert.ok(v2.table.corners[3].x > 0.85 && v2.table.corners[0].x > 0.5,
+    'and the box hugs the real table edges');
+});
+
+test('a tap on the floor, away from the table, does not invent a table there', () => {
   const quad = [[0.55, 0.7], [0.6, 0.4], [0.9, 0.4], [0.95, 0.7]];
   const v = withScene({ quad, table: [150, 40, 40], floor: [40, 60, 40] });
-  const byCentre = v.scanTable();                // seeds at 0.5, 0.55 → floor
-  assert.equal(byCentre, null, 'the centre guess should miss an off-centre table');
-  const v2 = withScene({ quad, table: [150, 40, 40], floor: [40, 60, 40] });
-  const byTap = v2.scanTable({ x: 0.75, y: 0.55 });   // tap on the table
-  assert.ok(byTap, 'a tap on the table should find it');
-  assert.ok(v2.table.corners[3].x > 0.8, 'and the box sits over the real table');
+  // Tapping the floor grows the floor, which fills the frame and is rejected.
+  assert.equal(v.scanTable({ x: 0.15, y: 0.5 }), null);
+});
+
+test('the net line and a glare spot do not fragment the table', () => {
+  // A table with a bright white stripe across the middle (the net line) and a
+  // washed-out patch (glare). Morphological closing and hole-fill should keep
+  // it one region rather than three.
+  const draw = (w, h) => {
+    const data = new Uint8ClampedArray(w * h * 4);
+    const inside = (x, y) => {
+      let hit = false;
+      for (let i = 0, j = 3; i < 4; j = i++) {
+        const [xi, yi] = TRUE_QUAD[i], [xj, yj] = TRUE_QUAD[j];
+        if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+      }
+      return hit;
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        let c = inside(x / w, y / h) ? [31, 111, 178] : [107, 98, 87];
+        // Net line: a thin bright band across the middle of the table.
+        if (inside(x / w, y / h) && Math.abs(y / h - 0.58) < 0.006) c = [240, 240, 240];
+        // Glare: a small blown-out patch on the table.
+        if (Math.hypot(x / w - 0.5, y / h - 0.5) < 0.03) c = [250, 250, 250];
+        data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255;
+      }
+    }
+    return data;
+  };
+  const v = new VisionReferee({ videoWidth: 640, videoHeight: 480 }, stubCanvas());
+  v.proc = { width: 0, height: 0 };
+  v.pctx = { drawImage() {}, getImageData: (x, y, w, h) => ({ data: draw(w, h) }) };
+  const found = v.scanTable();
+  assert.ok(found, 'the table should scan as one region despite the net line and glare');
+  // The box should span most of the table's height, not stop at the net line.
+  const ys = v.table.corners.map(c => c.y);
+  assert.ok(Math.max(...ys) - Math.min(...ys) > 0.28,
+    'the box spans the whole table, not just half');
 });
 
 test('a scanned table is placed, halves and boundary included', () => {

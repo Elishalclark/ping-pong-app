@@ -566,105 +566,6 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
    *
    * Returns { corners, coverage } or null when nothing table-like is found.
    */
-  scanTable(seed = { x: 0.5, y: 0.55 }) {
-    const vw = this.video.videoWidth, vh = this.video.videoHeight;
-    if (!vw) return null;
-
-    const W = 160, H = Math.round((W * vh) / vw);
-    this.proc.width = W; this.proc.height = H;
-    this.pctx.drawImage(this.video, 0, 0, W, H);
-    const d = this.pctx.getImageData(0, 0, W, H).data;
-    this.prev = null; this.bg = null;      // the frame size changed under us
-
-// Don't assume the table's colour. The user is pointing the phone at the
-    // table, so whatever colour dominates the middle of the frame IS the
-    // table — under whatever lighting they have. Sample that colour and grow
-    // the region of pixels like it. This works for a worn green table in a
-    // dim hall as well as a vivid blue one, where a fixed hue range failed.
-    // Sample the colour of a small patch around the seed point — the middle of
-    // the frame by default, or exactly where the user tapped the table.
-    const sx = Math.round(clamp(seed.x, 0.05, 0.95) * W);
-    const sy = Math.round(clamp(seed.y, 0.05, 0.95) * H);
-    const rad = Math.max(3, (W * 0.06) | 0);
-    let sr = 0, sg = 0, sb = 0, sn = 0;
-    for (let y = Math.max(0, sy - rad); y < Math.min(H, sy + rad); y++) {
-      for (let x = Math.max(0, sx - rad); x < Math.min(W, sx + rad); x++) {
-        const i = (y * W + x) * 4;
-        sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; sn++;
-      }
-    }
-    const seedColor = { r: sr / sn, g: sg / sn, b: sb / sn };
-
-    // Compare by chromaticity plus a loose brightness band, so the shading
-    // that falls across a real table (near edge bright, far edge dark) does
-    // not split it into two different "colours".
-    const chroma = (r, g, b) => { const t = r + g + b + 1; return [r / t, g / t]; };
-    const [scr, scg] = chroma(seedColor.r, seedColor.g, seedColor.b);
-    const seedLum = (seedColor.r + seedColor.g + seedColor.b) / 3;
-    const CHROMA_TOL = 0.055;    // how different in colour a pixel may be
-    const LUM_TOL = 95;          // and in brightness
-
-    const mask = new Uint8Array(W * H);
-    let count = 0;
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        const i = (y * W + x) * 4;
-        const r = d[i], g = d[i + 1], b = d[i + 2];
-        const [cr, cg] = chroma(r, g, b);
-        if (Math.abs(cr - scr) + Math.abs(cg - scg) > CHROMA_TOL) continue;
-        if (Math.abs((r + g + b) / 3 - seedLum) > LUM_TOL) continue;
-        mask[y * W + x] = 1; count++;
-      }
-    }
-    if (count < W * H * 0.03) return null;
-
-    // Grow from the centre specifically, so if the floor happens to match too
-    // it is the table (which the phone is aimed at) that anchors the region.
-    const seedIdx = sy * W + sx;
-    let region = mask[seedIdx] ? regionContaining(mask, W, H, seedIdx) : null;
-    if (!region || region.size < W * H * 0.02) region = largestRegion(mask, W, H);
-    if (!region || region.size < W * H * 0.02) return null;
-
-    // Fit a quad by taking the extreme points along both diagonals — for a
-    // rectangle seen in perspective these land on its four corners.
-    const ext = {
-      tl: { v: Infinity }, br: { v: -Infinity }, tr: { v: -Infinity }, bl: { v: Infinity },
-    };
-    let minX = W, maxX = 0, minY = H, maxY = 0;
-    for (const idx of region.pixels) {
-      const x = idx % W, y = (idx / W) | 0;
-      const sum = x + y, diff = x - y;
-      if (sum < ext.tl.v) ext.tl = { v: sum, x, y };
-      if (sum > ext.br.v) ext.br = { v: sum, x, y };
-      if (diff > ext.tr.v) ext.tr = { v: diff, x, y };
-      if (diff < ext.bl.v) ext.bl = { v: diff, x, y };
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-    }
-
-    // A region touching all four edges is the background (a wall, the floor
-    // filling the view), not a table sitting in the frame.
-    if (minX <= 1 && maxX >= W - 2 && minY <= 1 && maxY >= H - 2) return null;
-
-    const norm = p => ({ x: p.x / W, y: p.y / H });
-    // Walk the corners the way calibration expects: the near-left corner
-    // first, then up the left edge, across, and back down.
-    const corners = [norm(ext.bl), norm(ext.tl), norm(ext.tr), norm(ext.br)];
-
-    const area = Math.abs(polygonArea(corners));
-    if (area < 0.015) return null;           // too small to be the table
-
-    // The region must actually fill the quad it was fitted to. An L-shaped or
-    // scattered region can have four sensible extremes and be nothing like a
-    // table.
-    const fill = (region.size / (W * H)) / area;
-    if (fill < 0.5) return null;
-
-    this.setTable(corners);
-    return { corners, coverage: region.size / (W * H), fill };    this.setTable(corners);
-    return { corners, coverage: region.size / (W * H), fill };
-  }
-
   /**
    * Expected ball diameter in processing pixels at a point, from the table's
    * real dimensions and how foreshortened the table is there.
@@ -675,22 +576,16 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const len = (a, b) => Math.hypot((a.x - b.x) * W, (a.y - b.y) * H);
     const near = len(t.nearEnd[0], t.nearEnd[1]);
     const far = len(t.farEnd[0], t.farEnd[1]);
-
-    // How far down the table the point lies, 0 at the near end, 1 at the far.
     const dx = t.farMid.x - t.nearMid.x, dy = t.farMid.y - t.nearMid.y;
     const len2 = dx * dx + dy * dy || 1e-9;
     const f = Math.min(1.4, Math.max(-0.4,
       ((p.x - t.nearMid.x) * dx + (p.y - t.nearMid.y) * dy) / len2));
-
     const widthHere = near + (far - near) * f;
     return Math.max(1.2, widthHere * (BALL_M / TABLE_WIDTH_M));
   }
 
-  /**
-   * Choose a processing resolution from the geometry rather than by guesswork:
-   * enough that the ball is a few pixels across even at the far end, but no
-   * more, because every extra pixel is battery.
-   */
+  /** Choose a processing resolution from the geometry: the ball a few pixels
+   *  across at the far end, no more, because every extra pixel is battery. */
   _sizeProcWidth() {
     const t = this.table;
     if (!t) return;
@@ -705,11 +600,140 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   /** Start or stop hunting for the ball. */
   setTracking(on) {
     this.tracking = on;
-    if (on) this.captureBackground();   // start from the table as it is right now
+    if (on) this.captureBackground();
     else { this.track = null; this.trail.length = 0; }
   }
 
-  /** Remember the current frame as the empty-table background. */
+  /**
+   * Find the table and place the box on it. With no seed it searches a grid of
+   * seed points and keeps the most table-shaped result, so it does not depend
+   * on the table being centred; with a seed (the user tapped the table) it
+   * grows from exactly there. Returns { corners, coverage, fill } or null.
+   */
+  scanTable(seed = null) {
+    const vw = this.video.videoWidth, vh = this.video.videoHeight;
+    if (!vw) return null;
+
+    const W = 160, H = Math.round((W * vh) / vw);
+    this.proc.width = W; this.proc.height = H;
+    this.pctx.drawImage(this.video, 0, 0, W, H);
+    const d = this.pctx.getImageData(0, 0, W, H).data;
+    this.prev = null; this.bg = null;      // the frame size changed under us
+
+    let best = null;
+    if (seed) {
+      best = this._tableFromSeed(d, W, H, seed.x, seed.y);
+    } else {
+      // Try a spread of seed points and keep the best-scoring table. The floor
+      // and clutter produce low-scoring regions; the table, wherever it is,
+      // produces a large one that fills its own quad.
+      for (let gy = 0.35; gy <= 0.75; gy += 0.2) {
+        for (let gx = 0.25; gx <= 0.75; gx += 0.25) {
+          const cand = this._tableFromSeed(d, W, H, gx, gy);
+          if (cand && (!best || cand.score > best.score)) best = cand;
+        }
+      }
+    }
+    if (!best) return null;
+
+    this.setTable(best.corners);
+    return { corners: best.corners, coverage: best.coverage, fill: best.fill };
+  }
+
+  /** Grow a table region from one seed point and fit a box to it. */
+  _tableFromSeed(d, W, H, seedNx, seedNy) {
+    const sx = Math.round(clamp(seedNx, 0.05, 0.95) * W);
+    const sy = Math.round(clamp(seedNy, 0.05, 0.95) * H);
+
+    // Seed colour: the average of a small patch, so one stray pixel (a line, a
+    // reflection) doesn't set the reference.
+    const rad = Math.max(3, (W * 0.05) | 0);
+    let sr = 0, sg = 0, sb = 0, sn = 0;
+    for (let y = Math.max(0, sy - rad); y < Math.min(H, sy + rad); y++) {
+      for (let x = Math.max(0, sx - rad); x < Math.min(W, sx + rad); x++) {
+        const i = (y * W + x) * 4;
+        sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; sn++;
+      }
+    }
+    const seedColor = { r: sr / sn, g: sg / sn, b: sb / sn };
+
+    // Compare by chromaticity plus a loose brightness band, so shading across
+    // a real table does not split it into two different "colours".
+    const chroma = (r, g, b) => { const t = r + g + b + 1; return [r / t, g / t]; };
+    const [scr, scg] = chroma(seedColor.r, seedColor.g, seedColor.b);
+    const seedLum = (seedColor.r + seedColor.g + seedColor.b) / 3;
+    const CHROMA_TOL = 0.06, LUM_TOL = 100;
+
+    let mask = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const [cr, cg] = chroma(r, g, b);
+        if (Math.abs(cr - scr) + Math.abs(cg - scg) > CHROMA_TOL) continue;
+        if (Math.abs((r + g + b) / 3 - seedLum) > LUM_TOL) continue;
+        mask[y * W + x] = 1;
+      }
+    }
+
+    // Close small gaps: the white net line and glare split the table into
+    // pieces, and a dilate-then-erode bridges them back into one surface.
+    mask = morphClose(mask, W, H, 1);
+
+    const seedIdx = sy * W + sx;
+    let region = mask[seedIdx] ? regionContaining(mask, W, H, seedIdx) : largestRegion(mask, W, H);
+    if (!region || region.size < W * H * 0.02) return null;
+
+    // Rebuild a mask of just this region, fill any holes inside it (glare
+    // spots, the ball), then shave one pixel off the edge so a thin bleed into
+    // a similar-coloured floor doesn't push the corners out.
+    let rmask = new Uint8Array(W * H);
+    for (const idx of region.pixels) rmask[idx] = 1;
+    rmask = fillHoles(rmask, W, H);
+    const eroded = morphErode(rmask, W, H, 1);
+    const useMask = countMask(eroded) > W * H * 0.015 ? eroded : rmask;
+
+    // Fit a quad from the extreme points along both diagonals — for a
+    // rectangle in perspective these land near its four corners.
+    let tlv = Infinity, brv = -Infinity, trv = -Infinity, blv = Infinity;
+    let tl, br, tr, bl, minX = W, maxX = 0, minY = H, maxY = 0, size = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (!useMask[y * W + x]) continue;
+        size++;
+        const sum = x + y, diff = x - y;
+        if (sum < tlv) { tlv = sum; tl = { x, y }; }
+        if (sum > brv) { brv = sum; br = { x, y }; }
+        if (diff > trv) { trv = diff; tr = { x, y }; }
+        if (diff < blv) { blv = diff; bl = { x, y }; }
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+    if (!tl || size < W * H * 0.015) return null;
+    // A region spanning essentially the whole frame is the background (the
+    // floor or a wall filling the view), not a table sitting inside the frame.
+    if (minX < 0.03 * W && maxX > 0.97 * W && minY < 0.03 * H && maxY > 0.97 * H) return null;
+
+    const norm = p => ({ x: p.x / W, y: p.y / H });
+    const corners = [norm(bl), norm(tl), norm(tr), norm(br)];
+    const area = Math.abs(polygonArea(corners));
+    if (area < 0.015) return null;
+
+    const fill = (size / (W * H)) / area;   // how well the region fills its quad
+    if (fill < 0.5) return null;
+    const coverage = region.size / (W * H);
+    // Prefer a big region that fills its quad well and doesn't run to the edge.
+    // Touching two opposite edges is background-like; penalise it so a real
+    // table that merely reaches the bottom edge is still preferred.
+    const spansX = minX < 0.03 * W && maxX > 0.97 * W;
+    const spansY = minY < 0.03 * H && maxY > 0.97 * H;
+    const edgePenalty = (spansX || spansY) ? 0.5 : 1;
+    const score = coverage * fill * edgePenalty;
+    return { corners, coverage, fill, score };
+  }
+
+  /** Remember the current frame as the empty-table background. */  /** Remember the current frame as the empty-table background. */
   captureBackground() {
     const vw = this.video.videoWidth;
     if (!vw) return false;
@@ -927,6 +951,69 @@ function connectedBlobs(mask, weight, w, x0, y0, x1, y1) {
     }
   }
   return blobs;
+}
+
+/** Count set pixels in a mask. */
+function countMask(m) { let n = 0; for (let i = 0; i < m.length; i++) if (m[i]) n++; return n; }
+
+/** Dilate a binary mask by `r` (4-neighbour growth, repeated). */
+function morphDilate(mask, W, H, r = 1) {
+  let cur = mask;
+  for (let pass = 0; pass < r; pass++) {
+    const out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (cur[i] || (x > 0 && cur[i - 1]) || (x < W - 1 && cur[i + 1]) ||
+            (y > 0 && cur[i - W]) || (y < H - 1 && cur[i + W])) out[i] = 1;
+      }
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+/** Erode a binary mask by `r` (drop any pixel with a missing 4-neighbour). */
+function morphErode(mask, W, H, r = 1) {
+  let cur = mask;
+  for (let pass = 0; pass < r; pass++) {
+    const out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (!cur[i]) continue;
+        if (x === 0 || x === W - 1 || y === 0 || y === H - 1) continue;
+        if (cur[i - 1] && cur[i + 1] && cur[i - W] && cur[i + W]) out[i] = 1;
+      }
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+/** Closing = dilate then erode: bridges thin gaps (the net line, glare). */
+function morphClose(mask, W, H, r = 1) {
+  return morphErode(morphDilate(mask, W, H, r), W, H, r);
+}
+
+/** Fill holes: background not connected to the frame edge becomes foreground. */
+function fillHoles(mask, W, H) {
+  const outside = new Uint8Array(W * H);
+  const stack = [];
+  const pushIf = i => { if (!mask[i] && !outside[i]) { outside[i] = 1; stack.push(i); } };
+  for (let x = 0; x < W; x++) { pushIf(x); pushIf((H - 1) * W + x); }
+  for (let y = 0; y < H; y++) { pushIf(y * W); pushIf(y * W + W - 1); }
+  while (stack.length) {
+    const i = stack.pop();
+    const x = i % W, y = (i / W) | 0;
+    if (x > 0) pushIf(i - 1);
+    if (x < W - 1) pushIf(i + 1);
+    if (y > 0) pushIf(i - W);
+    if (y < H - 1) pushIf(i + W);
+  }
+  const out = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) out[i] = mask[i] || !outside[i] ? 1 : 0;
+  return out;
 }
 
 /** The 4-connected region of the mask that contains a given pixel. */

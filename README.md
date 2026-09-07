@@ -155,6 +155,17 @@ The two sensors answer different questions, and neither is trusted alone.
   tap **sample its colour** and then tap the ball in the picture for an exact
   match under your lighting. This is the single biggest reason the tracker
   stays on the ball rather than the nearest moving arm.
+- **More than colour separates the ball out.** Colour is the strongest cue,
+  but three others stack on top of it: **true roundness** (the pixel covariance
+  measures roundness in every direction, so a diagonal streak or an arm edge
+  that fooled the bounding box is rejected); the ball's **known size** at each
+  point on the table from the calibrated geometry; and, once locked on, the
+  ball's **own learned colour** — the tracker records the actual ball's colour
+  the moment it confirms and matches that specific colour from then on, tighter
+  than the white/orange preset and adapted to the exact ball and lighting,
+  reverting to the preset the instant the ball is lost. (A physical/ballistic
+  motion cue — the ball flies in a gravity arc and moves fast, which arms don't
+  — is the natural next classifier.)
 - **The marker only shows when it's genuinely locked on.** Tracking a small,
   fast, low-contrast ball from a single phone camera is at the edge of what a
   browser can do, so the tracker is deliberately conservative: a track is

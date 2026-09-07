@@ -52,6 +52,7 @@ export class VisionReferee {
     // ball is white or orange, and nothing else on the table is. Selecting by
     // colour is what lets the tracker follow the ball and not arms or shirts.
     this.ballColor = 'white';   // 'white' | 'orange' | a sampled {r,g,b}
+    this.ballTemplate = null;   // the ACTUAL ball's colour, learned once locked on
     this.onCameraLost = () => {};
     this.onCameraBack = () => {};
     this._recovering = false;
@@ -335,15 +336,25 @@ export class VisionReferee {
         continue;                            // uncalibrated: fall back to a cap
       }
 
+      // True roundness: a ball is round in every direction. A diagonal streak
+      // or an arm edge that slipped past the bounding-box test fails here.
+      const round = blobRoundness(c);
+      if (round < 0.35) continue;
+
+      const meanR = c.cr / c.n, meanG = c.cg / c.n, meanB = c.cb / c.n;
       // Colour is the decisive test: the blob must actually be the ball's
       // colour, not merely something that moved and is bright. This is what
       // rejects a swinging arm (skin) or a shirt in favour of the ball.
-      const col = this.ballColorScore(c.cr / c.n, c.cg / c.n, c.cb / c.n);
+      const col = this.ballColorScore(meanR, meanG, meanB);
       if (!col.pass) continue;
 
-      let score = (c.sw / c.n) * (1 / (1 + c.n / 30)) * fill * sizeFit * col.score;
+      let score = (c.sw / c.n) * (1 / (1 + c.n / 30)) * fill * sizeFit * col.score *
+                  (0.5 + 0.5 * round);
       if (px >= 0) score *= 1 / (1 + Math.hypot(cx - px, cy - py) / 25);
-      if (!best || score > best.score) best = { x: cx / w, y: cy / h, score, n: c.n, colScore: col.score };
+      if (!best || score > best.score) {
+        best = { x: cx / w, y: cy / h, score, n: c.n, colScore: col.score,
+                 round, color: { r: meanR, g: meanG, b: meanB } };
+      }
     }
     if (!best) return null;
     return { ...best, t, conf: Math.min(1, best.score / 40) };
@@ -472,6 +483,9 @@ export class VisionReferee {
     const y = yp + ALPHA * ry;
     const hits = prev.hits + 1;
     const confirmed = prev.confirmed || hits >= CONFIRM;
+    // The frame a track first confirms, adopt the ball's own colour as the
+    // template so later frames track this specific ball, not a generic preset.
+    if (confirmed && !prev.confirmed && m.color) this.ballTemplate = { ...m.color };
 
     // A bounce is the ball's downward motion reversing to upward. Reading it
     // from the smoothed velocity, with clear thresholds either side, is far
@@ -497,6 +511,7 @@ export class VisionReferee {
       this.trail.length = 0;
       this._rejectStreak = 0;
       this._lastReject = null;
+      this.ballTemplate = null;   // back to the preset until we lock on again
       this.onLost(prev);
       return;
     }
@@ -632,7 +647,7 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   }
 
   /** Choose what the ball looks like: 'white', 'orange', or a sampled colour. */
-  setBallColor(c) { this.ballColor = c; }
+  setBallColor(c) { this.ballColor = c; this.ballTemplate = null; }
 
   /** Sample the ball's colour from a patch of the current frame (tap the ball). */
   sampleBallColorAt(nx, ny) {
@@ -651,6 +666,7 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
       }
     this.prev = null; this.bg = null;
     this.ballColor = { r: r / k, g: g / k, b: b / k };
+    this.ballTemplate = null;
     return this.ballColor;
   }
 
@@ -661,6 +677,18 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
    * shirts, the table and shadows whatever their motion.
    */
   ballColorScore(r, g, bl) {
+    // Once the tracker has locked on, it matches the ball's own measured
+    // colour — tighter and more specific than the white/orange preset, and it
+    // adapts to the exact ball and lighting. It falls back to the preset the
+    // moment the ball is lost.
+    if (this.ballTemplate) {
+      const c = this.ballTemplate;
+      const t1 = r + g + bl + 1, t2 = c.r + c.g + c.b + 1;
+      const dc = Math.abs(r / t1 - c.r / t2) + Math.abs(g / t1 - c.g / t2);
+      const dl = Math.abs((r + g + bl) / 3 - (c.r + c.g + c.b) / 3);
+      if (dc > 0.07 || dl > 90) return { pass: false, score: 0 };
+      return { pass: true, score: 0.4 + 0.6 * clamp(1 - dc / 0.07, 0, 1) };
+    }
     const max = Math.max(r, g, bl), min = Math.min(r, g, bl);
     const v = max, sat = max === 0 ? 0 : (max - min) / max;
     if (this.ballColor === 'white') {
@@ -1040,13 +1068,15 @@ function connectedBlobs(mask, weight, rgba, w, x0, y0, x1, y1) {
       stack.length = 0;
       stack.push(start);
       mask[start] = 2;
-      const c = { n: 0, sx: 0, sy: 0, sw: 0, x0: x, x1: x, y0: y, y1: y, cr: 0, cg: 0, cb: 0 };
+      const c = { n: 0, sx: 0, sy: 0, sw: 0, x0: x, x1: x, y0: y, y1: y, cr: 0, cg: 0, cb: 0,
+                  mx: 0, my: 0, mxx: 0, myy: 0, mxy: 0 };
       while (stack.length) {
         const i = stack.pop();
         const ix = i % w, iy = (i / w) | 0;
         const s = weight[i];
         c.n++; c.sx += ix * s; c.sy += iy * s; c.sw += s;
         const p4 = i * 4; c.cr += rgba[p4]; c.cg += rgba[p4 + 1]; c.cb += rgba[p4 + 2];
+        c.mx += ix; c.my += iy; c.mxx += ix * ix; c.myy += iy * iy; c.mxy += ix * iy;
         if (ix < c.x0) c.x0 = ix; if (ix > c.x1) c.x1 = ix;
         if (iy < c.y0) c.y0 = iy; if (iy > c.y1) c.y1 = iy;
         for (let dy = -1; dy <= 1; dy++) {
@@ -1063,6 +1093,24 @@ function connectedBlobs(mask, weight, rgba, w, x0, y0, x1, y1) {
     }
   }
   return blobs;
+}
+
+/** Roundness of a blob from its pixel covariance: 1 for a disc, →0 as it
+ *  stretches into a line. More robust than a bounding box, which a diagonal
+ *  streak fools. */
+function blobRoundness(c) {
+  if (c.n < 4) return 0;
+  const mx = c.mx / c.n, my = c.my / c.n;
+  const vxx = c.mxx / c.n - mx * mx;
+  const vyy = c.myy / c.n - my * my;
+  const vxy = c.mxy / c.n - mx * my;
+  const tr = vxx + vyy;
+  const det = vxx * vyy - vxy * vxy;
+  const disc = Math.max(0, tr * tr / 4 - det);
+  const l1 = tr / 2 + Math.sqrt(disc);
+  const l2 = tr / 2 - Math.sqrt(disc);
+  if (l1 <= 1e-6) return 0;
+  return Math.max(0, l2 / l1);   // 1 = perfectly round, 0 = a line
 }
 
 /** Count set pixels in a mask. */

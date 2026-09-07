@@ -564,6 +564,59 @@ test('position lookup interpolates between frames for audio sync', () => {
     `interpolated x ${at?.x.toFixed(3)} should be the midpoint of ${a.toFixed(3)} and ${b.toFixed(3)}`);
 });
 
+// --- more ways to tell the ball apart --------------------------------------
+
+test('a round blob is taken but a same-area diagonal streak is rejected', () => {
+  const v = make();
+  v.setBallColor('white');
+  const w = 192, h = 144, centre = { x: 0.5, y: 0.55 };
+  const r = Math.max(2, v.expectedBallPx(centre, w, h) / 2);
+  const round = detectColor(v, w, h, [{ x: centre.x * w, y: centre.y * h, r, c: [245, 245, 245] }]);
+  assert.ok(round, 'the round ball should be found');
+
+  // A thin diagonal streak of the same colour and similar pixel count.
+  const v2 = make(); v2.setBallColor('white');
+  const streak = (ww, hh) => {
+    const data = new Uint8ClampedArray(ww * hh * 4);
+    for (let i = 0; i < ww * hh; i++) { data[i*4]=70; data[i*4+1]=74; data[i*4+2]=78; data[i*4+3]=255; }
+    for (let k = -8; k <= 8; k++) {
+      const x = Math.round(centre.x*ww + k), y = Math.round(centre.y*hh + k);
+      for (const [ox,oy] of [[0,0],[1,0],[0,1]]) {
+        const i = ((y+oy)*ww + (x+ox))*4; data[i]=245; data[i+1]=245; data[i+2]=245;
+      }
+    }
+    return { data };
+  };
+  v2.prev=null; v2.bg=null; v2.track=null;
+  v2._findBall(streak(w,h), w, h, 0);   // but frame 0 has the streak already...
+  // fresh background frames without the streak, then the streak frame:
+  const v3 = make(); v3.setBallColor('white');
+  const plain = (ww,hh)=>{const d=new Uint8ClampedArray(ww*hh*4);for(let i=0;i<ww*hh;i++){d[i*4]=70;d[i*4+1]=74;d[i*4+2]=78;d[i*4+3]=255;}return{data:d};};
+  v3.prev=null; v3.bg=null; v3.track=null;
+  v3._findBall(plain(w,h), w, h, 0); v3._findBall(plain(w,h), w, h, 16);
+  const found = v3._findBall(streak(w,h), w, h, 32);
+  assert.equal(found, null, 'a diagonal streak is not round enough to be the ball');
+});
+
+test('once locked, the tracker learns the ball’s own colour and reverts when lost', () => {
+  const v = make();
+  v.setBallColor('white');
+  assert.equal(v.ballTemplate, null, 'no template before locking on');
+  // Confirm a track by feeding a coherent run, each carrying a colour.
+  let x = 0.4;
+  for (let i = 0; i < 5; i++) {
+    v.__clock = (v.__clock ?? 1000) + 16;
+    v._updateTrack({ x, y: 0.55, t: v.__clock, conf: 1, color: { r: 250, g: 248, b: 235 } }, v.__clock);
+    x += 0.03;
+  }
+  assert.ok(v.track && v.track.confirmed, 'the track confirmed');
+  assert.ok(v.ballTemplate, 'the ball’s colour was learned on confirmation');
+  assert.ok(Math.abs(v.ballTemplate.r - 250) < 1, 'and it is the colour that was seen');
+  // Lose the ball; the template must clear so a preset applies again.
+  for (let i = 0; i < 40; i++) step(v, null);
+  assert.equal(v.ballTemplate, null, 'the template clears when the ball is lost');
+});
+
 // --- conservative acquisition: don't lock onto anything that moves ---------
 
 test('jumpy, incoherent detections never confirm a track', () => {

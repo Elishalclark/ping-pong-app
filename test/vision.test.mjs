@@ -617,6 +617,27 @@ test('once locked, the tracker learns the ball’s own colour and reverts when l
   assert.equal(v.ballTemplate, null, 'the template clears when the ball is lost');
 });
 
+// --- re-seed must not let a distractor hijack a confirmed track ------------
+
+test('a distant slow distractor run does not re-seed a confirmed track', () => {
+  const v = make();
+  // Lock on to a fast ball moving right.
+  let x = 0.35;
+  for (let i = 0; i < 6; i++) { step(v, { x, y: 0.5 }); x += 0.05; }
+  assert.ok(v.track && v.track.confirmed, 'ball confirmed');
+
+  // A distractor appears far from the predicted path (so each detection is a
+  // rejected *surprise*), self-coherent but SLOW — a drifting arm, not a ball.
+  // The old code re-seeded onto any two nearby surprises and confirmed
+  // instantly; now a slow re-seed is refused.
+  step(v, { x: 0.30, y: 0.72 });
+  step(v, { x: 0.305, y: 0.723 });   // ~0.006 over a frame → far below ball speed
+  // The tracker must not now be a confirmed lock sitting on the distractor.
+  const onDistractor = v.track && v.track.confirmed &&
+    Math.hypot(v.track.x - 0.305, v.track.y - 0.723) < 0.05;
+  assert.equal(onDistractor, false, 'a slow surprise run must not become a confirmed lock');
+});
+
 // --- physical (ballistic) motion -------------------------------------------
 
 test('a slow, coherent drift does not confirm — the ball moves fast', () => {

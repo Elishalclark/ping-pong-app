@@ -24,7 +24,6 @@ export class Referee {
 
     this._lastEventAt = 0;
     this.deafUntil = 0;     // ignore the microphone while the umpire is talking
-    this._lastContactSide = null;
     this._pendingOut = null;
 
     this.audio.onOnset = o => this.handleOnset(o);
@@ -85,7 +84,6 @@ export class Referee {
       // Contact off the surface is a stroke; the half the ball is over tells
       // us who played it.
       this._pendingOut = null;
-      this._lastContactSide = side;
       this._emit({ type: 'hit', side, t: o.wallTime, confidence: round2(confidence * 0.9) });
     }
   }

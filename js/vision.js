@@ -219,13 +219,20 @@ export class VisionReferee {
     }
     this._draw();
 
-    // Tracking a ball is worthless if it costs so much that frames are
-    // dropped, so trade resolution for frame rate until the phone keeps up.
+    // The processing resolution is chosen once from the table geometry
+    // (_sizeProcWidth) so the ball is a few pixels across. It is NOT adapted
+    // per frame: changing it mid-match resized the buffers and wiped the
+    // learned background every time, which on a phone hovering near the cost
+    // threshold happened constantly and made the tracker lose the ball. If a
+    // device is truly too slow, one sustained step down is enough — handled
+    // below with heavy hysteresis, never oscillating.
     const cost = performance.now() - t;
-    this._cost = this._cost ? this._cost * 0.9 + cost * 0.1 : cost;
-    const floor = this.minProcWidth ?? 128;
-    if (this._cost > 11 && this.procWidth > floor) this.procWidth -= 16;
-    else if (this._cost < 4 && this.procWidth < 288) this.procWidth += 8;
+    this._cost = this._cost ? this._cost * 0.92 + cost * 0.08 : cost;
+    this._overAt = this._cost > 16 ? (this._overAt ?? t) : null;
+    if (this._overAt && t - this._overAt > 4000 && this.procWidth > (this.minProcWidth ?? 128)) {
+      this.procWidth -= 16;          // one deliberate step after 4s of overload
+      this._overAt = null;
+    }
 
     this._frames++;
     if (t - this._fpsAt > 500) {
@@ -302,10 +309,11 @@ export class VisionReferee {
     }
     this.prev = grey;
 
-    // Learn the background slowly, and not at all where the ball might be:
-    // baking the ball into the background is what makes a tracker go blind
-    // when a rally settles into a rhythm.
-    for (let i = 0; i < n; i++) this.bg[i] += (grey[i] - this.bg[i]) * 0.02;
+    // Learn the background slowly, and NOT where a candidate (possible ball)
+    // was found — baking the ball into the background is what makes a tracker
+    // go blind when a rally settles into a rhythm. (The previous version
+    // updated every pixel, contradicting this intent.)
+    for (let i = 0; i < n; i++) if (!mask[i]) this.bg[i] += (grey[i] - this.bg[i]) * 0.02;
     if (!candidates) return null;
 
     // Group by connectivity, not by proximity. Grouping greedily lets a large
@@ -359,6 +367,13 @@ export class VisionReferee {
       }
     }
     if (!best) return null;
+
+    // Acquiring a fresh lock demands a clearly ball-like blob: it is far worse
+    // to start tracking a white shirt than to wait a few frames for the ball.
+    // Once locked on, the bar is lower so motion blur doesn't drop the ball.
+    const acquiring = !this.track || !this.track.confirmed;
+    if (acquiring && (best.round < 0.5 || best.colScore < 0.5)) return null;
+
     return { ...best, t, conf: Math.min(1, best.score / 40) };
   }
 
@@ -389,8 +404,8 @@ export class VisionReferee {
       this._lastReject = { x: found.x, y: found.y, t };
       this._rejectStreak = (this._rejectStreak || 0) + 1;
       if (this._rejectStreak >= 2 && lr && t > lr.t &&
-          Math.hypot(found.x - lr.x, found.y - lr.y) < RESEED_RADIUS) {
-        this._reseed(found, lr, t);
+          Math.hypot(found.x - lr.x, found.y - lr.y) < RESEED_RADIUS &&
+          this._reseed(found, lr, t)) {
         this._rejectStreak = 0;
         this._lastReject = null;
         return;
@@ -416,18 +431,28 @@ export class VisionReferee {
     return clamp(1 - Math.hypot(rx, ry) / 0.02, 0, 1);
   }
 
-  /** Restart the track on a detection the model had stopped following. */
+  /**
+   * Restart the track on a run of detections the model stopped following.
+   * Only a confirmed track re-seeds (a reversal of a real ball), and the new
+   * motion must itself be fast enough to be a ball — otherwise this is just a
+   * slow distractor and the track is dropped instead. The re-seeded track is
+   * NOT auto-confirmed: it must re-earn confirmation through the normal
+   * speed/ballistic/coherence gates, so a distractor cannot hijack the marker
+   * by producing two nearby blobs.
+   */
   _reseed(m, prevReject, t) {
+    if (!this.track || !this.track.confirmed) return false;
     const dt = clamp((t - prevReject.t) / 1000, 1 / 125, 0.1);
     let vx = (m.x - prevReject.x) / dt;
     let vy = (m.y - prevReject.y) / dt;
     const speed = Math.hypot(vx, vy);
+    if (speed < MIN_BALL_SPEED) return false;      // too slow to be the ball
     if (speed > V_MAX) { const k = V_MAX / speed; vx *= k; vy *= k; }
-    this.track = { x: m.x, y: m.y, vx, vy, t, conf: m.conf ?? 0.5,
-                   hits: CONFIRM, misses: 0, confirmed: true };
-    this._checkBoundary({ x: m.x, y: m.y }, t);
+    this.track = { x: m.x, y: m.y, vx, vy, t, conf: (m.conf ?? 0.5) * 0.6,
+                   hits: 2, misses: 0, confirmed: false };
     this._lastSeen = t;
     this._pushTrail(m.x, m.y, t, false);
+    return true;
   }
 
   /**

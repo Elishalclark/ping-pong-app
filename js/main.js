@@ -257,7 +257,8 @@ $('btnStart').addEventListener('click', async () => {
 
   started = true;
   $('btnFlip').hidden = !(await vision.hasMultipleCameras());
-  setInterval(() => {
+  clearInterval(window.__statusTimer);
+  window.__statusTimer = setInterval(() => {
     els.fps.textContent = `${vision.fps} fps`;
     const ball = $('ballStatus');
     if (vision.tracking) {

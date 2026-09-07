@@ -29,6 +29,10 @@ export class RulesEngine {
     this.rally = null;
     this.history = [];
     this.matchOver = false;
+    // Set only when a rally was written off by _onDead — the ball went quiet
+    // or out of camera view and nothing conclusive was ever heard again, not
+    // an actual point being decided. See _onHit for why this matters.
+    this._ambiguousResume = false;
   }
 
   get state() {
@@ -82,14 +86,24 @@ export class RulesEngine {
     const side = ev.side;
 
     if (this.phase === 'serve' && r.strokes === 0) {
-      // The service stroke itself. Server must be the one striking it.
+      // The service stroke itself. Server must be the one striking it — UNLESS
+      // this rally only exists because Referee synthesises a serve-start the
+      // moment a stroke arrives with nobody serving (see referee.js._emit).
+      // That synthetic restart fires just as readily when the ball simply
+      // went quiet or out of camera view for a few seconds mid-rally as it
+      // does at a genuine new point: there is no way to tell those apart from
+      // here. Faulting whoever happened to be hitting the ball when tracking
+      // resumed — often the very player who did nothing wrong — is worse
+      // than not enforcing serve turn for that one ambiguous stroke.
       r.strokes = 1;
       r.lastHitter = side;
       r.bouncesSinceHit = [];
-      if (side !== this.server) {
+      const ambiguous = this._ambiguousResume;
+      this._ambiguousResume = false;
+      if (side !== this.server && !ambiguous) {
         return this._point(other(side), 'served out of turn', ev.confidence, 'fault');
       }
-      return [{ type: 'info', reason: 'service struck', confidence: ev.confidence }];
+      return [{ type: 'info', reason: ambiguous ? 'play resumed after a gap' : 'service struck', confidence: ev.confidence }];
     }
 
     // A return: the ball must have bounced exactly once, on the striker's own
@@ -223,6 +237,10 @@ export class RulesEngine {
   _onDead(ev) {
     this.phase = 'awaiting-serve';
     this.rally = null;
+    // Unlike a scored point, this doesn't mean play actually stopped — the
+    // ball may simply have gone quiet or out of view for a few seconds while
+    // the point continued. See _onHit for what this protects against.
+    this._ambiguousResume = true;
     return [{ type: 'info', reason: 'rally ended, no call', confidence: ev.confidence ?? 0 }];
   }
 
@@ -231,6 +249,9 @@ export class RulesEngine {
   _let(reason, confidence = 1) {
     this.phase = 'awaiting-serve';
     this.rally = null;
+    // A let is a real, well-understood outcome — nothing ambiguous about who
+    // serves next — unlike the silent timeout _onDead sets this flag for.
+    this._ambiguousResume = false;
     this.history.push({ kind: 'let', reason });
     return [{ type: 'let', reason, confidence }];
   }
@@ -254,6 +275,8 @@ export class RulesEngine {
     if (offender) this.faults[offender] += 1;
     this.phase = 'awaiting-serve';
     this.rally = null;
+    // A real, decided point — same reasoning as _let above.
+    this._ambiguousResume = false;
 
     const calls = [{ type: 'point', side, reason, confidence, kind, offender }];
     const g = this._checkGame();

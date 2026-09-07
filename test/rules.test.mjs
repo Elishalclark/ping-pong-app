@@ -324,3 +324,75 @@ test('undo restores the fault count as well as the score', () => {
   assert.deepEqual(e.faults, { A: 0, B: 0 });
   assert.deepEqual(e.score, { A: 0, B: 0 });
 });
+
+// --- resuming after the ball goes quiet or out of view mid-rally -----------
+//
+// RulesEngine itself never restarts a rally on its own — that synthesis
+// ("a stroke while nobody is serving means a new rally has begun") is
+// referee.js._emit's job, injecting a serve-start right before the hit that
+// triggered it. These tests reproduce that exact two-step sequence rather
+// than relying on RulesEngine to do it, since feed() intentionally ignores a
+// bare 'hit' while there is no rally (`if (!this.rally && ev.type !==
+// 'serve-start') return [];`) — skipping the injection would make these
+// tests pass trivially, on an empty call list, without exercising anything.
+const resumeWith = (e, side) => {
+  if (e.phase === 'awaiting-serve') e.feed({ type: 'serve-start', t: 0 });
+  return e.feed({ type: 'hit', side, confidence: 1, t: 0 });
+};
+
+test('a rally that times out mid-play is a no-call, not a point', () => {
+  const e = engine(); serve(e);
+  rally(e, { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' });
+  const calls = e.feed({ type: 'dead', t: 0, confidence: 0 });
+  assert.equal(calls[0].type, 'info');
+  assert.deepEqual(e.score, { A: 0, B: 0 });
+  assert.equal(e.phase, 'awaiting-serve');
+});
+
+test('play resuming after a silent timeout is not scored as an illegal serve', () => {
+  // The ball went out of camera view (or just stopped making a sound worth
+  // hearing) for a few seconds mid-rally. The rules engine has no way to
+  // know the point didn't actually end, so a timeout writes the rally off —
+  // but the very next stroke, from whoever happens to be hitting the ball
+  // when tracking resumes, must not then be judged as if it were a botched
+  // fresh serve. Here B is receiving, B ends up striking the next detected
+  // shot, and B is not `e.server` (A) — the old behaviour faulted exactly
+  // this as "served out of turn".
+  const e = engine(); serve(e);
+  rally(e, { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' });
+  e.feed({ type: 'dead', t: 0, confidence: 0 });
+  const calls = resumeWith(e, 'B');
+  assert.equal(calls.some(c => c.type === 'point'), false,
+    `resuming play should not fault anyone: ${JSON.stringify(calls)}`);
+  assert.deepEqual(e.score, { A: 0, B: 0 });
+});
+
+test('the ambiguous-resume allowance is spent on the first stroke only', () => {
+  // Once play has resumed and been judged once, a genuinely new violation —
+  // a real out-of-turn serve on the FOLLOWING point — must still be caught.
+  const e = engine(); serve(e);
+  rally(e, { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' });
+  e.feed({ type: 'dead', t: 0, confidence: 0 });
+  resumeWith(e, 'B');
+  rally(e, { type: 'bounce', side: 'B' }, { type: 'bounce', side: 'A' },
+    { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' });
+  e.feed({ type: 'dead', t: 0, confidence: 0 });
+  // Now a genuine new point: B serves when it should still be A's turn.
+  const calls = resumeWith(e, 'B');
+  const point = calls.find(c => c.type === 'point');
+  assert.ok(point, 'a real out-of-turn serve on a later, unrelated point should still be caught');
+});
+
+test('a manually-called let clears the ambiguous-resume allowance', () => {
+  // If the umpire steps in with a definite decision (a let, here) between a
+  // timeout and the next stroke, that decision — not the earlier timeout —
+  // is what the next serve should be judged against.
+  const e = engine(); serve(e);
+  rally(e, { type: 'hit', side: 'A' }, { type: 'bounce', side: 'A' }, { type: 'bounce', side: 'B' });
+  e.feed({ type: 'dead', t: 0, confidence: 0 });
+  e.callLet('umpire call');
+  const calls = resumeWith(e, 'B');
+  const point = calls.find(c => c.type === 'point');
+  assert.ok(point && point.reason === 'served out of turn',
+    'a real serve-turn violation right after an explicit let should still be caught');
+});

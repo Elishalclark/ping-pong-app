@@ -318,6 +318,24 @@ bounces separately from the generic "one bounce since the last stroke" count
 a rally return is judged against, specifically so a bounce on the wrong side
 of that pair can't be mistaken for the right one.
 
+## If the ball goes quiet or out of view mid-rally
+
+A long point, a ball that rolls behind a player, or just a stretch with no
+camera or microphone lock doesn't end the point — the app has no way to tell
+"the point is over" apart from "nothing has been heard for a while," so after
+about 2.6 seconds of silence it writes the rally off with an honest **no
+call** rather than inventing one, and starts watching fresh the moment the
+next stroke is heard.
+
+That fresh start deliberately does **not** re-check whose turn it is to
+serve. Whoever happens to be hitting the ball when tracking resumes is just
+as likely to be the receiver mid-rally as an actual next server — the app has
+no way to tell those apart either — so faulting them for "serving out of
+turn" would often be blaming the one player who did nothing wrong. That
+leniency is spent on the very next stroke only: a genuine out-of-turn serve
+on the next real point, or right after a let or a point the umpire calls by
+hand, is still caught normally.
+
 ## The out-of-bounds line
 
 The red dashed line around the table is the boundary. When the tracked ball

@@ -840,3 +840,70 @@ test('a bright distractor does not steal a confirmed track from the ball', () =>
   assert.ok(confirmedFrames >= 12, `should hold a lock through the rally (held ${confirmedFrames}/20)`);
   assert.equal(onBall, confirmedFrames, 'every confirmed frame should sit on the real ball');
 });
+
+// --- predicted contact points: a fitted landing point, not a straight line -
+
+test('a ball still rising gets a predicted landing point ahead of it, not behind it', () => {
+  const v = make();
+  // Feed the RISING half of a parabolic arc only — the vertex (the turn from
+  // rising to falling) lies just past the last sample, not inside the
+  // observed window, which is what makes this a genuine forward prediction
+  // rather than reporting a turn that has already happened.
+  const t0 = 1000;
+  const pts = [];
+  for (let i = 0; i < 8; i++) {
+    const t = t0 + i * 16;
+    const x = 0.3 + 0.02 * i;
+    const y = 0.55 - 0.012 * i + 0.0008 * i * i;   // vertex is a couple of steps ahead
+    pts.push({ x, y, t });
+  }
+  for (const p of pts) v._updateTrack({ ...p, conf: 1 }, p.t);
+  assert.equal(v.isLocked, true, 'should be locked on after a smooth ballistic run');
+  const contact = v.predictedContact();
+  assert.ok(contact, 'a curved recent path should yield a prediction');
+  assert.ok(contact.bounce, 'a curving arc should predict a landing point');
+  assert.ok(contact.bounce.t > pts[pts.length - 1].t, 'the landing point should be in the future');
+});
+
+test('a dead-straight glide (no curvature) predicts no landing point', () => {
+  const v = make();
+  const t0 = 1000;
+  for (let i = 0; i < 8; i++) {
+    const t = t0 + i * 16;
+    v._updateTrack({ x: 0.3 + 0.02 * i, y: 0.55, conf: 1, t }, t);
+  }
+  assert.equal(v.isLocked, true);
+  const contact = v.predictedContact();
+  // A perfectly flat path has no vertex to find — reporting one anyway would
+  // be inventing a landing point instead of reading one off the flight.
+  assert.ok(!contact || !contact.bounce, 'a straight glide should not fabricate a landing point');
+});
+
+test('a path crossing the table centre predicts a net crossing', () => {
+  const v = make();
+  const t0 = 1000;
+  // A flat shot heading toward the net position (table x=0.5 is the net),
+  // still short of it by the last observed sample — the crossing is ahead,
+  // not something that already happened inside the observed window.
+  for (let i = 0; i < 8; i++) {
+    const t = t0 + i * 16;
+    v._updateTrack({ x: 0.30 + 0.015 * i, y: 0.58, conf: 1, t }, t);
+  }
+  assert.equal(v.isLocked, true);
+  const contact = v.predictedContact();
+  assert.ok(contact && contact.netCross, 'a path heading toward the net position should predict a crossing ahead of it');
+});
+
+test('a path that stays in one half predicts no net crossing', () => {
+  const v = make();
+  const t0 = 1000;
+  // Drifts within A's half only, never approaching the net.
+  for (let i = 0; i < 8; i++) {
+    const t = t0 + i * 16;
+    v._updateTrack({ x: 0.28 + 0.002 * i, y: 0.58, conf: 1, t }, t);
+  }
+  // This is slow drift, likely not even confirmed — but if it is, it must not
+  // claim a net crossing it never approaches.
+  const contact = v.predictedContact();
+  if (contact) assert.equal(contact.netCross, null, 'should not predict a net crossing far from the net');
+});

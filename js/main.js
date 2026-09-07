@@ -46,11 +46,15 @@ function beginCalibration() {
   calibrating = true;
   dragIdx = -1;
   dragBox = null;
-  if (!vision.table) vision.setTable(DEFAULT_BOX.map(c => ({ ...c })));
   els.hint.hidden = false;
   $('btnRef').disabled = true;
   els.overlay.classList.add('calibrating');
-  say('Place the box over the playing surface — drag the middle to move it, a corner to reshape it.', 'info');
+  // A standard table fills most of the frame and is a large, roughly uniform
+  // surface unlike anything around it — that is enough to find it without
+  // being told where it is. So the default is to look, not to hand the user
+  // an empty box to drag: dragging by hand is the fallback for when the shot
+  // or the lighting genuinely defeats the scan, not the normal path.
+  runScan();
 }
 
 function finishCalibration() {
@@ -85,17 +89,23 @@ function runScan(seed) {
     return;
   }
   if (!found) {
+    // Automatic detection failed. Getting the whole table into frame,
+    // reasonably lit, is the usual fix; a manual box is the fallback for the
+    // shots that genuinely defeat the scan, not a lesser version of it — so
+    // one has to exist to drag, which it otherwise wouldn't on a first,
+    // automatic attempt.
+    if (!vision.table) vision.setTable(DEFAULT_BOX.map(c => ({ ...c })));
     hint.innerHTML = seed
       ? 'That spot didn’t look like the table. Tap right on the playing surface, or drag the box on by hand.'
-      : 'Couldn’t find the table automatically. <b>Tap the table</b> in the picture, or drag the box on by hand.';
-    log('table scan found nothing', 'info', 0);
+      : 'Couldn’t find the table automatically — make sure it’s all in view. <b>Tap the table</b> in the picture, or drag the box on by hand.';
+    log('table scan found nothing' + (seed ? '' : ' — falling back to manual box'), 'info', 0);
     return;
   }
   // The photo is the table with nobody playing on it, which is exactly the
   // reference the tracker wants for spotting the ball later.
   vision.captureBackground();
-  hint.innerHTML = 'Got it. Check the box sits on the table — drag a corner to fix it, <b>Swap ends</b> if A and B are reversed — then <b>Use this box</b>.';
-  log(`table found — ${Math.round(found.coverage * 100)}% of the view`, 'info', 1);
+  hint.innerHTML = 'Found the table. Check the box sits on it — drag a corner to fix it, <b>Swap ends</b> if A and B are reversed — then <b>Use this box</b>.';
+  log(`table found${seed ? '' : ' automatically'} — ${Math.round(found.coverage * 100)}% of the view`, 'info', 1);
 }
 
 function flash() {

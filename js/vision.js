@@ -33,11 +33,22 @@ const BOUNCE_VY = 0.35;       // filtered vertical speed either side of a bounce
 const MIN_BALL_SPEED = 0.5;   // frame-widths/second — the ball moves; a drifting arm barely does
 const BALLISTIC_MIN = 0.3;    // how smooth the recent path must be to count as physical motion
 // A blob smaller than this has no measurable shape and cannot be told from
-// sensor noise, whatever else it scores. Safe because the processing
-// resolution is deliberately chosen (_sizeProcWidth) so the ball is about
-// 3.2 px across even at the FAR end of the table — a disc that size covers
-// roughly 8 pixels, so a real ball clears this floor with room to spare.
+// sensor noise, whatever else it scores. This is the ABSOLUTE floor, for the
+// uncalibrated case where there is no per-position size to compare against;
+// once a table is calibrated, MIN_FILL_FACTOR below is the real gate and it
+// is almost always stricter than this.
 const MIN_BALL_PIXELS = 4;
+// Once calibrated, a candidate must fill at least this fraction of the disc
+// area a real ball would have AT THAT SPOT — not a flat pixel count. A ball
+// near the camera might be 8 px across (~50 px of area) and one at the far
+// end 3 px across (~7 px of area); a flat floor is either too loose up close
+// or too tight far away. Tying it to the expected area closes both at once:
+// a 2x2 square (4 px, perfectly filled) is nowhere near a real disc's area
+// wherever the ball would be genuinely large, but is not unduly punished at
+// the far end where a real ball's disc is small too. 0.55 rather than 1.0
+// because brightness thresholding and anti-aliasing always undercount a real
+// disc's edge pixels.
+const MIN_FILL_FACTOR = 0.55;
 // How much more elongated a blob may be when its long axis points exactly the
 // way the ball is travelling — i.e. how much motion blur is forgiven.
 const BLUR_ELONG_FACTOR = 2.0;
@@ -410,6 +421,12 @@ export class VisionReferee {
         // distant ball, which really is only a couple of pixels across at the
         // far end — the processing resolution is chosen to keep it so.
         if (dim < Math.max(2, expect * 0.68 / Math.pow(sTol, 0.25))) continue;
+        // A real disc's AREA at this spot, not just its bounding-box width, is
+        // what a degenerate blob (a filled square, a thick dot) cannot fake
+        // without actually being close to that size everywhere the ball would
+        // be big — see MIN_FILL_FACTOR above.
+        const minArea = Math.PI * (expect / 2) ** 2 * MIN_FILL_FACTOR;
+        if (c.n < minArea) continue;
         sizeFit = 1 / (1 + Math.abs(dim - expect) / expect);
       } else if (c.n > 90) {
         continue;                            // uncalibrated: fall back to a cap
@@ -763,26 +780,68 @@ export class VisionReferee {
   static get TOP_DOWN_ASPECT() { return TABLE_WIDTH_M / TABLE_LENGTH_M; }
 
   /**
-   * A short predicted path ahead of the ball's current position, in image
-   * space, from its current filtered velocity — a straight, constant-speed
-   * projection, not a full physics simulation. That is a deliberate choice:
-   * a real trajectory curves with gravity and breaks entirely at the next
-   * bounce or paddle contact, so extrapolating far or curving it would show
-   * false confidence. This is "where it's headed in the next instant," not
-   * a forecast of the rest of the rally, and it fades out for exactly that
-   * reason. Returns null when there's nothing trustworthy to predict from.
+   * Where the ball's actual flight is headed: a predicted landing point and,
+   * if the path reaches it first, a predicted net crossing. Not a straight
+   * line run forward — a straight line never lands anywhere — but the vertex
+   * of a quadratic fitted to the ball's recent path, the same curve-fitting
+   * `_ballisticScore` already uses to tell a real flight from an arm's
+   * jitter. Returns null when there's no confident enough recent flight to
+   * fit a curve to, or when neither a landing nor a net crossing falls
+   * within the lookahead window.
    */
-  predictedPath(aheadMs = 220, steps = 5) {
+  predictedContact(horizonMs = 900) {
     if (!this.isLocked) return null;
-    const t = this.track;
-    const speed = Math.hypot(t.vx, t.vy);
-    if (speed < 0.15) return null;   // too slow for a direction to mean anything
-    const pts = [];
-    for (let i = 1; i <= steps; i++) {
-      const dt = (aheadMs * i) / steps / 1000;
-      pts.push({ x: t.x + t.vx * dt, y: t.y + t.vy * dt, f: i / steps });
+    const pts = this.trail.filter(p => !p.predicted).slice(-8);
+    if (pts.length < 4) return null;
+    const t0 = pts[0].t;
+    const ts = pts.map(p => (p.t - t0) / 1000);
+    const fx = quadFit(ts, pts.map(p => p.x));
+    const fy = quadFit(ts, pts.map(p => p.y));
+    if (!fx || !fy) return null;
+
+    const lastT = ts[ts.length - 1];
+    const horizon = lastT + horizonMs / 1000;
+
+    // The landing point is the vertex of the fitted curve in image-y — the
+    // same proxy for height the bounce detector itself reads its reversal
+    // from — not a run of the current velocity forward, which never curves
+    // back down. A near-flat fit (|c| tiny) has no meaningful vertex within
+    // reach, and is left null rather than reporting a wild, distant guess.
+    let bounce = null;
+    if (Math.abs(fy.c) > 1e-4) {
+      const tVertex = -fy.b / (2 * fy.c);
+      if (tVertex > lastT && tVertex <= horizon) {
+        const x = fx.at(tVertex), y = fy.at(tVertex);
+        if (x > -0.15 && x < 1.15 && y > -0.15 && y < 1.15) {
+          bounce = { x, y, t: t0 + tVertex * 1000, onTable: this.isOnTable({ x, y }) };
+        }
+      }
     }
-    return pts;
+
+    // Net crossing: step the fitted curve forward and watch its TOP-DOWN
+    // x-coordinate — 0.5 is the net, regardless of how the table is framed
+    // — cross the midline, up to the predicted landing or the horizon,
+    // whichever comes first. This is a position claim only: a single camera
+    // has no way to know the ball's height above the table, so it is "the
+    // path crosses the net's line," not "clears" or "clips" it — that call
+    // is audio's to make (see Referee._nearNet), this is just showing where.
+    let netCross = null;
+    const limitT = bounce ? (bounce.t - t0) / 1000 : horizon;
+    const STEP = 0.02;
+    let prevSide = null;
+    for (let t = lastT; t <= limitT; t += STEP) {
+      const td = this.topDownPoint({ x: fx.at(t), y: fy.at(t) });
+      if (!td) break;
+      const side = Math.sign(td.x - 0.5) || 1;
+      if (prevSide !== null && side !== prevSide) {
+        netCross = { x: fx.at(t), y: fy.at(t), t: t0 + t * 1000 };
+        break;
+      }
+      prevSide = side;
+    }
+
+    if (!bounce && !netCross) return null;
+    return { bounce, netCross };
   }
 
   /**
@@ -1233,28 +1292,39 @@ export class VisionReferee {
       ctx.stroke();
     }
 
-    // Where it's headed, not just where it's been: a short predicted path
-    // drawn ahead of the ball, fading out with distance so it reads as a
-    // brief projection rather than a promise about the rest of the rally.
-    const ahead = this.predictedPath();
-    if (ahead) {
-      ctx.lineWidth = 2;
-      let prev = this.track;
-      for (const p of ahead) {
-        ctx.strokeStyle = `rgba(120,220,255,${(0.6 * (1 - p.f)).toFixed(2)})`;
-        ctx.beginPath();
-        ctx.moveTo(prev.x * W, prev.y * H);
-        ctx.lineTo(p.x * W, p.y * H);
-        ctx.stroke();
-        prev = p;
-      }
-      const tip = ahead[ahead.length - 1];
-      ctx.fillStyle = 'rgba(120,220,255,.5)';
-      ctx.beginPath(); ctx.arc(tip.x * W, tip.y * H, 4, 0, Math.PI * 2); ctx.fill();
-    }
+    // Where it's headed, not just where it's been — but as the two contact
+    // points that actually matter (will it land on the table, does its path
+    // cross the net), not a line drawn forward from where it is now.
+    this._drawContactMarkers(ctx, W, H, p => ({ x: p.x * W, y: p.y * H }));
 
     ctx.strokeStyle = '#ffdc50'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(this.track.x * W, this.track.y * H, 10, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  /** Draw the predicted landing/net-crossing markers `toCanvas` maps into.
+   *  `toCanvas` may return null (a top-down mapping can fail without a
+   *  homography), in which case that marker is simply skipped. */
+  _drawContactMarkers(ctx, W, H, toCanvas) {
+    const contact = this.predictedContact();
+    if (!contact) return;
+    if (contact.netCross) {
+      const c = toCanvas(contact.netCross);
+      if (c) {
+        ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(c.x - 7, c.y); ctx.lineTo(c.x + 7, c.y);
+        ctx.moveTo(c.x, c.y - 7); ctx.lineTo(c.x, c.y + 7); ctx.stroke();
+      }
+    }
+    if (contact.bounce) {
+      const c = toCanvas(contact.bounce);
+      if (c) {
+        ctx.strokeStyle = contact.bounce.onTable ? 'rgba(120,220,255,.85)' : 'rgba(248,81,73,.85)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(c.x, c.y, 7, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(c.x, c.y, 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+      }
+    }
   }
 
   /**
@@ -1333,19 +1403,13 @@ export class VisionReferee {
       ctx.stroke();
     }
 
-    const ahead = this.predictedPath();
-    if (ahead) {
-      let prev = tdBall;
-      for (const p of ahead) {
-        const tp = this.topDownPoint(p);
-        if (!tp) break;
-        const a = toCanvas(prev), b = toCanvas(tp);
-        ctx.strokeStyle = `rgba(120,220,255,${(0.6 * (1 - p.f)).toFixed(2)})`;
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-        prev = tp;
-      }
-    }
+    // The same predicted landing/net-crossing markers as the camera view,
+    // mapped through the homography onto true table coordinates instead of
+    // the camera's foreshortened ones.
+    this._drawContactMarkers(ctx, W, H, p => {
+      const tp = this.topDownPoint(p);
+      return tp ? toCanvas(tp) : null;
+    });
 
     const bc = toCanvas(tdBall);
     ctx.fillStyle = '#ffdc50'; ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.lineWidth = 1.5;
@@ -1666,7 +1730,11 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  * the samples lie on a smooth constant-acceleration curve (a flying ball),
  * large when they jitter. Solves the 3×3 normal equations by Cramer's rule.
  */
-function quadFitResidual(ts, ys) {
+/**
+ * Least-squares quadratic y = a + b*t + c*t^2 through the given points.
+ * Returns null for a degenerate (too-clustered) set of t values.
+ */
+function quadFit(ts, ys) {
   const n = ts.length;
   let S0 = n, S1 = 0, S2 = 0, S3 = 0, S4 = 0, T0 = 0, T1 = 0, T2 = 0;
   for (let i = 0; i < n; i++) {
@@ -1677,16 +1745,19 @@ function quadFitResidual(ts, ys) {
   const det = (a, b, c, d, e, f, g, h, i) =>
     a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
   const D = det(S0, S1, S2, S1, S2, S3, S2, S3, S4);
-  if (Math.abs(D) < 1e-12) return 0;
+  if (Math.abs(D) < 1e-12) return null;
   const a = det(T0, S1, S2, T1, S2, S3, T2, S3, S4) / D;
   const b = det(S0, T0, S2, S1, T1, S3, S2, T2, S4) / D;
   const c = det(S0, S1, T0, S1, S2, T1, S2, S3, T2) / D;
+  return { a, b, c, at: t => a + b * t + c * t * t };
+}
+
+function quadFitResidual(ts, ys) {
+  const fit = quadFit(ts, ys);
+  if (!fit) return 0;
   let sse = 0;
-  for (let i = 0; i < n; i++) {
-    const pred = a + b * ts[i] + c * ts[i] * ts[i];
-    sse += (ys[i] - pred) ** 2;
-  }
-  return Math.sqrt(sse / n);
+  for (let i = 0; i < ts.length; i++) sse += (ys[i] - fit.at(ts[i])) ** 2;
+  return Math.sqrt(sse / ts.length);
 }
 const cross = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 const sign = v => (v >= 0 ? 1 : -1);

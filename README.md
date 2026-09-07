@@ -63,22 +63,23 @@ no browser bars, and works with no signal at all.
    The app deliberately turns off the browser's noise suppression, echo
    cancellation and auto gain — phones enable all three by default, and all
    three are designed to remove exactly the kind of short click a ball makes.
-3. **Tap Start**, then **place the box**. The accurate way is to do it by
-   hand: **drag each corner** of the box onto the actual corner of the table.
-   A magnifier appears under your finger so you can place it precisely, and
-   drag the middle of the box to slide the whole thing into position first.
-   This is exact, and it's one-time — the phone sits in one spot for the
-   match, so ten seconds here is all it costs. **Swap ends** flips which end
-   is Player A's; each half is labelled **A** and **B** in the scoreboard's
-   colours. Tap **Use this box** when it's on the table.
-
-   There's also **📷 Take photo**, which guesses the table's outline from the
-   picture automatically. It's a shortcut, not a substitute — automatic
-   detection can be thrown off by glare, clutter, or a table colour close to
-   the floor's — so treat whatever it draws as a starting point and drag any
-   corner that's off. The box stays draggable at any time, before or after
-   you tap Use this box.
-4. **Begin match.** The ball marker only appears once a match is running —
+3. **Tap Start**, then **Calibrate**. With the whole table in frame, the app
+   looks for it itself — a table is a big, roughly uniform surface unlike
+   anything else in the shot, and that's enough to find its four corners
+   without being told where they are. There is no box to place by hand as a
+   first step; a box appears already sitting on the table.
+4. **Check it, don't just trust it.** Automatic detection can be thrown off
+   by glare, clutter, or a table colour close to the floor's, so glance at the
+   box before tapping **Use this box**. If a corner is off, **drag it** onto
+   the table's actual corner — a magnifier appears under your finger so you
+   can place it precisely — or drag the middle of the box to slide the whole
+   thing into position. **Swap ends** flips which end is Player A's; each
+   half is labelled **A** and **B** in the scoreboard's colours. If nothing
+   was found at all (the hint says so), **tap the table** in the picture to
+   scan from exactly that point, tap **🔄 Rescan** to try again, or place all
+   four corners by hand — the box is always there and always draggable, a
+   fallback rather than a lesser version of the automatic scan.
+5. **Begin match.** The ball marker only appears once a match is running —
    before that there is nothing for it to track, and showing it would just
    chase movement around the room. Keep the app in the foreground: a backgrounded phone stops
    the camera and microphone, and the app will tell you that play went
@@ -184,7 +185,13 @@ The two sensors answer different questions, and neither is trusted alone.
   trivially fills its own bounding box, a two-pixel speck outscored the real
   ball (22.4 against 14.7 at equal brightness), which is why the marker chased
   every glint and flicker on the table. With a calibrated table the geometry
-  is the size prior, and the crude term is gone.
+  is the size prior, and the crude term is gone. The floor itself is tied to
+  the ball's expected *area* at that spot on the table, not a flat pixel
+  count: a fixed count is either too loose right in front of the camera
+  (where a real ball is dozens of pixels across) or too tight at the far end
+  (where it is only a handful) — scaling with the real disc's area at that
+  position closes a coincidentally ball-sized speck out at every distance at
+  once, without punishing a genuinely small, genuinely distant ball.
 - **Physical motion — the ball flies, arms don't.** A struck ball moves fast
   and traces a smooth arc (constant horizontal speed, gravity pulling it down);
   a waving arm drifts slowly and a shadow jitters. A track confirms as the ball
@@ -242,6 +249,16 @@ The two sensors answer different questions, and neither is trusted alone.
   the quad, it's a stroke. Near the net line and quiet, it's a net touch. **A
   sound with no ball behind it is discarded, not guessed at** — that is what
   keeps a dropped chair from awarding a point.
+  "Near the net" is judged in the table's own top-down coordinates (the same
+  homography the digital table view uses), not raw camera-frame distance: a
+  fixed frame-space threshold meant something different every time the phone
+  was set up differently, since the same physical inch near the net covers
+  more of the frame when the table is closer and less when it's further back.
+  Tied to the table's real length instead, the zone is the same width — about
+  14 cm either side of the net — no matter how the phone happens to be
+  framed, which is what made let calls unreliable before: with the table
+  small in frame (a typical "couple of metres back" setup), the old check
+  could call a bounce most of the way into a half a net touch.
 - **`js/rules.js` is the rulebook**, a pure state machine with no knowledge of
   cameras or microphones, driven entirely by those physical events. It's the
   part that's fully covered by tests (`npm test`).
@@ -249,24 +266,34 @@ The two sensors answer different questions, and neither is trusted alone.
 ## Seeing where the ball is going
 
 Two views sit on top of the tracking, both driven by the same locked-on
-track and the calibrated table geometry — neither is a separate guess.
+track and the calibrated table geometry — neither is a separate guess. Both
+show the same two predicted **points**, not a line: where the ball will land,
+and whether its path crosses the net's position before then. A straight line
+run forward from the current velocity never actually lands anywhere, so it
+was replaced with a curve fitted to the ball's last few real positions — the
+same fit `_ballisticScore` already uses to tell a real flight from an arm's
+jitter — and the point where that curve turns over (rises then falls, or
+falls then rises) is the predicted landing point. A flat, uncurving path
+correctly predicts no landing point at all, rather than inventing one.
 
-- **A predicted path on the camera view.** Once the ball is locked on and
-  moving, a short fading line is drawn ahead of it along its current
-  velocity — where the filter expects it to be over the next couple of
-  hundred milliseconds if nothing changes. It disappears the instant the
-  ball is lost or slows, rather than extrapolating a stale flight.
-- **A digital table, seen from directly above.** The camera view is a
-  trapezoid — the far end of the table is smaller than the near end — which
-  makes it hard to judge at a glance whether a ball landed in or out on the
-  far half. Calibrating the table also computes a homography (the same
-  four-point perspective transform used to unwarp a scanned document) that
-  maps any point in the camera image onto a true top-down rectangle. The
-  panel below the camera feed draws that rectangle with the net line and
-  A/B labels, and — once the tracker is locked on — the ball's real
-  position and short predicted path in it, undistorted by the camera's
-  angle. It appears the moment calibration finishes and stays in sync with
-  whatever the tracker is doing; there is nothing to turn on separately.
+- **On the camera view**, a crosshair marks a predicted net crossing and a
+  ring marks the predicted landing spot — cyan if it lands on the table, red
+  if it doesn't. Both disappear the instant there's nothing to predict from
+  (the ball lost, or moving too straight to have a vertex ahead of it).
+- **On the digital table**, the same two points are drawn again, mapped
+  through the same homography as everything else there — so the landing
+  point shown is where the ball will really land on the table, not where the
+  camera's perspective makes it look like it will.
+- **What "crosses the net" does and doesn't mean.** A single camera has no
+  way to know how high above the table the ball is — that would need a
+  second camera or a depth sensor — so the crossing point is a horizontal
+  position claim only: the ball's path passes the net's position at that
+  spot. It is not a claim that the ball clipped the net cord or cleared it
+  clean; that distinction is still the microphone's to make, by hearing an
+  actual net touch (see below).
+
+The digital table appears the moment calibration finishes and stays in sync
+with whatever the tracker is doing; there is nothing to turn on separately.
 
 ## Faults and rally points are not the same thing
 

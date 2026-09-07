@@ -11,6 +11,13 @@ import { RulesEngine } from './rules.js';
 
 const RALLY_TIMEOUT = 2600;  // ms of silence before a rally is written off
 const OUT_TIMEOUT = 900;     // ms the ball may fly past the table before it's out
+// How close to the net's true position (the midpoint of the table's length,
+// in the top-down projection where 0.5 is the net) a bounce counts as a net
+// touch rather than an ordinary bounce near mid-table. As a fraction of the
+// whole 2.74 m table length, 0.05 either side is about 14 cm — a few ball
+// diameters, wide enough for tracking and audio-sync slop without reaching
+// deep into either half.
+const NET_ZONE = 0.05;
 
 export class Referee {
   constructor(vision, audio, opts = {}) {
@@ -137,7 +144,21 @@ export class Referee {
     return calls;
   }
 
+  /**
+   * Is this point close to the net, physically? The top-down projection (the
+   * same homography the digital table view uses) puts the net at exactly
+   * x=0.5 regardless of how the table is framed in the shot — near or far,
+   * zoomed in or out, dead-on or at an angle. A raw image-space distance, by
+   * contrast, means something different every time the phone is moved, which
+   * is what made this call unreliable: too tight and real net touches near
+   * either side of the table went uncalled as lets; too loose and it isn't,
+   * both at once, depending on how far back the phone happened to be set up.
+   */
   _nearNet(p) {
+    const topdown = this.vision.topDownPoint(p);
+    if (topdown) return Math.abs(topdown.x - 0.5) < NET_ZONE;
+    // No homography yet — an incompletely calibrated table. Fall back to the
+    // old image-space estimate rather than never calling a let at all.
     const table = this.vision.table;
     if (!table) return false;
     const [a, b] = table.net;

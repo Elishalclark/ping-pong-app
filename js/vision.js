@@ -48,6 +48,10 @@ export class VisionReferee {
     this.fps = 0;
     this.facing = 'environment';
     this.tracking = false;      // only hunt for the ball during an active match
+    // The ball's colour is the one property almost unique to it: a regulation
+    // ball is white or orange, and nothing else on the table is. Selecting by
+    // colour is what lets the tracker follow the ball and not arms or shirts.
+    this.ballColor = 'white';   // 'white' | 'orange' | a sampled {r,g,b}
     this.onCameraLost = () => {};
     this.onCameraBack = () => {};
     this._recovering = false;
@@ -304,7 +308,7 @@ export class VisionReferee {
     // Group by connectivity, not by proximity. Grouping greedily lets a large
     // object — an arm, a shirt — fragment into several ball-sized pieces and
     // slip straight through the size test below.
-    const blobs = connectedBlobs(mask, weight, w, x0, y0, x1, y1);
+    const blobs = connectedBlobs(mask, weight, d, w, x0, y0, x1, y1);
 
     let best = null;
     for (const c of blobs) {
@@ -331,9 +335,15 @@ export class VisionReferee {
         continue;                            // uncalibrated: fall back to a cap
       }
 
-      let score = (c.sw / c.n) * (1 / (1 + c.n / 30)) * fill * sizeFit;
+      // Colour is the decisive test: the blob must actually be the ball's
+      // colour, not merely something that moved and is bright. This is what
+      // rejects a swinging arm (skin) or a shirt in favour of the ball.
+      const col = this.ballColorScore(c.cr / c.n, c.cg / c.n, c.cb / c.n);
+      if (!col.pass) continue;
+
+      let score = (c.sw / c.n) * (1 / (1 + c.n / 30)) * fill * sizeFit * col.score;
       if (px >= 0) score *= 1 / (1 + Math.hypot(cx - px, cy - py) / 25);
-      if (!best || score > best.score) best = { x: cx / w, y: cy / h, score, n: c.n };
+      if (!best || score > best.score) best = { x: cx / w, y: cy / h, score, n: c.n, colScore: col.score };
     }
     if (!best) return null;
     return { ...best, t, conf: Math.min(1, best.score / 40) };
@@ -619,6 +629,71 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     this.procWidth = Math.round(Math.min(288, Math.max(144, wanted)) / 8) * 8;
     this.minProcWidth = Math.max(128, Math.round(this.procWidth * 0.7));
     this.prev = null; this.bg = null;
+  }
+
+  /** Choose what the ball looks like: 'white', 'orange', or a sampled colour. */
+  setBallColor(c) { this.ballColor = c; }
+
+  /** Sample the ball's colour from a patch of the current frame (tap the ball). */
+  sampleBallColorAt(nx, ny) {
+    const vw = this.video.videoWidth;
+    if (!vw) return null;
+    const W = 160, H = Math.round((W * this.video.videoHeight) / vw);
+    this.proc.width = W; this.proc.height = H;
+    this.pctx.drawImage(this.video, 0, 0, W, H);
+    const d = this.pctx.getImageData(0, 0, W, H).data;
+    const sx = Math.round(clamp(nx, 0.02, 0.98) * W), sy = Math.round(clamp(ny, 0.02, 0.98) * H);
+    const rad = 3;
+    let r = 0, g = 0, b = 0, k = 0;
+    for (let y = Math.max(0, sy - rad); y < Math.min(H, sy + rad); y++)
+      for (let x = Math.max(0, sx - rad); x < Math.min(W, sx + rad); x++) {
+        const i = (y * W + x) * 4; r += d[i]; g += d[i + 1]; b += d[i + 2]; k++;
+      }
+    this.prev = null; this.bg = null;
+    this.ballColor = { r: r / k, g: g / k, b: b / k };
+    return this.ballColor;
+  }
+
+  /**
+   * How well a colour matches the ball, 0..1, and whether it passes at all.
+   * White: bright and unsaturated. Orange: the ball's hue, saturated. A
+   * sampled colour: close in chromaticity. This is the gate that rejects skin,
+   * shirts, the table and shadows whatever their motion.
+   */
+  ballColorScore(r, g, bl) {
+    const max = Math.max(r, g, bl), min = Math.min(r, g, bl);
+    const v = max, sat = max === 0 ? 0 : (max - min) / max;
+    if (this.ballColor === 'white') {
+      // A white ball is bright and nearly colourless. Skin, wood and warm
+      // lighting are all more saturated than this, which is what separates
+      // them out.
+      if (v < 105 || sat > 0.25) return { pass: false, score: 0 };
+      const bright = clamp((v - 105) / 150, 0, 1);
+      const white = clamp(1 - sat / 0.25, 0, 1);
+      return { pass: true, score: 0.35 + 0.65 * bright * white };
+    }
+    if (this.ballColor === 'orange') {
+      // Hue of orange is where red is high, green mid, blue low.
+      let h = 0;
+      const d2 = max - min || 1;
+      if (max === r) h = 60 * (((g - bl) / d2) % 6);
+      else if (max === g) h = 60 * ((bl - r) / d2 + 2);
+      else h = 60 * ((r - g) / d2 + 4);
+      if (h < 0) h += 360;
+      // Orange balls are vividly saturated; skin shares the hue but is far
+      // less saturated, so a high saturation floor is what tells them apart.
+      const hueOk = h >= 8 && h <= 48;
+      if (!hueOk || sat < 0.5 || v < 80) return { pass: false, score: 0 };
+      const hueFit = 1 - Math.abs(h - 28) / 20;
+      return { pass: true, score: 0.35 + 0.65 * clamp(hueFit, 0, 1) * clamp(sat, 0, 1) };
+    }
+    // Sampled colour: compare chromaticity and brightness.
+    const c = this.ballColor;
+    const t1 = r + g + bl + 1, t2 = c.r + c.g + c.b + 1;
+    const dc = Math.abs(r / t1 - c.r / t2) + Math.abs(g / t1 - c.g / t2);
+    const dl = Math.abs((r + g + bl) / 3 - (c.r + c.g + c.b) / 3);
+    if (dc > 0.08 || dl > 110) return { pass: false, score: 0 };
+    return { pass: true, score: 0.4 + 0.6 * clamp(1 - dc / 0.08, 0, 1) };
   }
 
   /** True only when the tracker is genuinely locked on the ball (confirmed
@@ -955,7 +1030,7 @@ const hueDistance = (a, b) => {
  * Every 8-connected blob in a mask, with its weighted centroid and bounds.
  * Eight-way connectivity keeps a motion-blurred ball in one piece.
  */
-function connectedBlobs(mask, weight, w, x0, y0, x1, y1) {
+function connectedBlobs(mask, weight, rgba, w, x0, y0, x1, y1) {
   const blobs = [];
   const stack = [];
   for (let y = y0; y < y1; y++) {
@@ -965,12 +1040,13 @@ function connectedBlobs(mask, weight, w, x0, y0, x1, y1) {
       stack.length = 0;
       stack.push(start);
       mask[start] = 2;
-      const c = { n: 0, sx: 0, sy: 0, sw: 0, x0: x, x1: x, y0: y, y1: y };
+      const c = { n: 0, sx: 0, sy: 0, sw: 0, x0: x, x1: x, y0: y, y1: y, cr: 0, cg: 0, cb: 0 };
       while (stack.length) {
         const i = stack.pop();
         const ix = i % w, iy = (i / w) | 0;
         const s = weight[i];
         c.n++; c.sx += ix * s; c.sy += iy * s; c.sw += s;
+        const p4 = i * 4; c.cr += rgba[p4]; c.cg += rgba[p4 + 1]; c.cb += rgba[p4 + 2];
         if (ix < c.x0) c.x0 = ix; if (ix > c.x1) c.x1 = ix;
         if (iy < c.y0) c.y0 = iy; if (iy > c.y1) c.y1 = iy;
         for (let dy = -1; dy <= 1; dy++) {

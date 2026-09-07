@@ -224,6 +224,68 @@ test('with both in view, the ball-sized one wins', () => {
   assert.ok(Math.abs(found.x - ball.x) < 0.06, `picked ${found.x.toFixed(2)} not the ball`);
 });
 
+/** A grey frame with coloured discs, so colour gating can be exercised. */
+function colorFrame(w, h, blobs, base = [70, 74, 78]) {
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    data[i * 4] = base[0]; data[i * 4 + 1] = base[1]; data[i * 4 + 2] = base[2]; data[i * 4 + 3] = 255;
+  }
+  for (const { x, y, r, c } of blobs) {
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (dx * dx + dy * dy > r * r) continue;
+      const px = Math.round(x + dx), py = Math.round(y + dy);
+      if (px < 0 || py < 0 || px >= w || py >= h) continue;
+      const i = (py * w + px) * 4;
+      data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2];
+    }
+  }
+  return { data };
+}
+
+function detectColor(v, w, h, blobs) {
+  v.prev = null; v.bg = null; v.track = null;
+  v._findBall(colorFrame(w, h, []), w, h, 0);
+  v._findBall(colorFrame(w, h, []), w, h, 16);
+  return v._findBall(colorFrame(w, h, blobs), w, h, 32);
+}
+
+test('a white ball is followed and a skin-coloured blob the same size is not', () => {
+  const v = make();
+  v.setBallColor('white');
+  const w = 192, h = 144, centre = { x: 0.5, y: 0.55 };
+  const r = Math.max(2, v.expectedBallPx(centre, w, h) / 2);
+  const white = detectColor(v, w, h, [{ x: centre.x * w, y: centre.y * h, r, c: [245, 245, 245] }]);
+  assert.ok(white, 'the white ball should be found');
+  const skin = detectColor(v, w, h, [{ x: centre.x * w, y: centre.y * h, r, c: [205, 150, 120] }]);
+  assert.equal(skin, null, 'a skin-coloured blob must be rejected');
+});
+
+test('with white selected, an orange ball is ignored, and vice versa', () => {
+  const w = 192, h = 144, centre = { x: 0.5, y: 0.55 };
+  const vw = make(); vw.setBallColor('white');
+  const r = Math.max(2, vw.expectedBallPx(centre, w, h) / 2);
+  assert.equal(detectColor(vw, w, h, [{ x: centre.x*w, y: centre.y*h, r, c: [230,120,30] }]), null,
+    'white mode ignores an orange blob');
+  const vo = make(); vo.setBallColor('orange');
+  assert.ok(detectColor(vo, w, h, [{ x: centre.x*w, y: centre.y*h, r, c: [230,120,30] }]),
+    'orange mode finds the orange ball');
+});
+
+test('the ball colour picks the ball out from among several moving blobs', () => {
+  const v = make();
+  v.setBallColor('orange');
+  const w = 192, h = 144;
+  const ball = { x: 0.62, y: 0.5 };
+  const r = Math.max(2, v.expectedBallPx(ball, w, h) / 2);
+  const found = detectColor(v, w, h, [
+    { x: ball.x * w, y: ball.y * h, r, c: [235, 125, 35] },     // the orange ball
+    { x: 0.4 * w, y: 0.6 * h, r, c: [210, 155, 125] },          // a hand, same size
+    { x: 0.5 * w, y: 0.45 * h, r, c: [240, 240, 240] },         // a white logo on a shirt
+  ]);
+  assert.ok(found, 'the ball was found');
+  assert.ok(Math.abs(found.x - ball.x) < 0.06, `picked ${found.x.toFixed(2)}, expected the orange ball`);
+});
+
 test('nothing outside the out-of-bounds line is even looked at', () => {
   const v = make();
   const w = 192, h = 144;

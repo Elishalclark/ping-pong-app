@@ -145,6 +145,16 @@ The two sensors answer different questions, and neither is trusted alone.
   the ball *was* as well as where it is, and it loses the ball entirely
   whenever the ball slows down. Blobs that are too long and thin, or too
   sparse, are rejected as arms and shirt edges.
+- **Colour is how it follows the ball and not everything else.** Motion and
+  brightness are shared by arms, shirts and shadows, but a regulation ball is
+  white or orange and nothing else on the table is. Every candidate blob is
+  measured against the ball's colour and rejected outright if it doesn't match:
+  white is bright and nearly colourless (skin and wood are more saturated),
+  orange is a vividly saturated warm hue (skin shares the hue but not the
+  saturation). Set the ball colour in **Setup → Ball** — White or Orange — or
+  tap **sample its colour** and then tap the ball in the picture for an exact
+  match under your lighting. This is the single biggest reason the tracker
+  stays on the ball rather than the nearest moving arm.
 - **The marker only shows when it's genuinely locked on.** Tracking a small,
   fast, low-contrast ball from a single phone camera is at the edge of what a
   browser can do, so the tracker is deliberately conservative: a track is

@@ -159,6 +159,15 @@ els.overlay.addEventListener('pointermove', e => {
 });
 
 const endDrag = e => {
+  // A one-shot ball-colour sample: consumes this tap wherever it lands.
+  if (sampling && downAt && !moved) {
+    sampling = false;
+    const c = vision.sampleBallColorAt(downAt.x, downAt.y);
+    setBallColorUI(null);   // now a custom sampled colour
+    downAt = null; els.loupe.hidden = true;
+    if (c) { say(`Ball colour sampled. Now tracking that colour.`, 'info'); log('ball colour sampled', 'info', 1); buzz(20); }
+    return;
+  }
   const wasCorner = dragIdx >= 0;
   const wasDraggingBox = !!dragBox;
   const tapPoint = downAt;
@@ -526,6 +535,23 @@ $('gamePoints').addEventListener('change', e => {
 });
 $('doubles').addEventListener('change', e => { if (referee) referee.engine.doubles = e.target.checked; });
 $('showDebug').addEventListener('change', e => (vision.showDebug = e.target.checked));
+
+// --- ball colour: the tracker follows this colour and rejects everything else
+function setBallColorUI(mode) {
+  if (mode === 'white' || mode === 'orange') vision.setBallColor(mode);
+  $('ballWhite').classList.toggle('seg-on', mode === 'white');
+  $('ballOrange').classList.toggle('seg-on', mode === 'orange');
+}
+$('ballWhite').addEventListener('click', () => { setBallColorUI('white'); log('ball colour: white', 'info', 1); });
+$('ballOrange').addEventListener('click', () => { setBallColorUI('orange'); log('ball colour: orange', 'info', 1); });
+
+// Arm a one-shot: the next tap on the video samples the ball's colour there.
+let sampling = false;
+$('ballSample').addEventListener('click', () => {
+  if (!started) return say('Tap <b>Start</b> first.', 'fault');
+  sampling = true;
+  say('Hold the ball still on the table and <b>tap it</b> in the picture.', 'info');
+});
 $('wakeLock').addEventListener('change', e => (e.target.checked ? requestWakeLock() : releaseWakeLock()));
 
 bind('onsetSens', v => { audio.applySettings({ sensitivity: +v }); return v; });

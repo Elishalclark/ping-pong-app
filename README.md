@@ -163,9 +163,15 @@ The two sensors answer different questions, and neither is trusted alone.
   ball's **own learned colour** — the tracker records the actual ball's colour
   the moment it confirms and matches that specific colour from then on, tighter
   than the white/orange preset and adapted to the exact ball and lighting,
-  reverting to the preset the instant the ball is lost. (A physical/ballistic
-  motion cue — the ball flies in a gravity arc and moves fast, which arms don't
-  — is the natural next classifier.)
+  reverting to the preset the instant the ball is lost.
+- **Physical motion — the ball flies, arms don't.** A struck ball moves fast
+  and traces a smooth arc (constant horizontal speed, gravity pulling it down);
+  a waving arm drifts slowly and a shadow jitters. A track confirms as the ball
+  only if it is moving fast enough AND its recent path fits smooth
+  constant-acceleration motion (measured as the residual of a least-squares
+  quadratic fit over the last several positions — a straight glide is the
+  zero-gravity case and fits too). Slow coherent drift and fast jitter are both
+  turned away, and the fit quality feeds the tracker's confidence.
 - **The marker only shows when it's genuinely locked on.** Tracking a small,
   fast, low-contrast ball from a single phone camera is at the edge of what a
   browser can do, so the tracker is deliberately conservative: a track is

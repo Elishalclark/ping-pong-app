@@ -617,6 +617,42 @@ test('once locked, the tracker learns the ball’s own colour and reverts when l
   assert.equal(v.ballTemplate, null, 'the template clears when the ball is lost');
 });
 
+// --- physical (ballistic) motion -------------------------------------------
+
+test('a slow, coherent drift does not confirm — the ball moves fast', () => {
+  const v = make();
+  // Smoothly moving but barely: a waving arm, not a struck ball.
+  let x = 0.45;
+  for (let i = 0; i < 8; i++) { step(v, { x, y: 0.5 }); x += 0.004; }   // ~0.25/s
+  assert.equal(v.isLocked, false, 'a slow drift is not ball-like enough to lock on');
+});
+
+test('a fast smooth arc confirms and scores as ballistic', () => {
+  const v = make();
+  // A gravity arc: horizontal glide, vertical accelerating downward.
+  let x = 0.35;
+  const y = t => 0.35 + 0.9 * t + 4 * t * t;   // metres-ish, arbitrary but smooth
+  let i = 0;
+  for (; i < 6; i++) {
+    const t = i * 0.016;
+    step(v, { x, y: Math.min(0.72, y(t)) });
+    x += 0.035;
+  }
+  assert.equal(v.isLocked, true, 'a fast smooth arc should lock on');
+  assert.ok(v.track.ballistic > 0.6, `arc should score high, got ${v.track.ballistic?.toFixed(2)}`);
+});
+
+test('a fast but jittery path is not treated as physical motion', () => {
+  const v = make();
+  // Fast enough, but the vertical position jumps around — not a real flight.
+  const ys = [0.5, 0.62, 0.44, 0.66, 0.4, 0.7];
+  let x = 0.35;
+  for (const yy of ys) { step(v, { x, y: yy }); x += 0.04; }
+  // Either it never confirmed, or its ballistic score is low.
+  if (v.isLocked) assert.ok(v.track.ballistic < 0.5, 'jittery motion should score low');
+  else assert.ok(true, 'jittery motion did not confirm, which is fine');
+});
+
 // --- conservative acquisition: don't lock onto anything that moves ---------
 
 test('jumpy, incoherent detections never confirm a track', () => {

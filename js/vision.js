@@ -29,6 +29,8 @@ const LOST_CONFIRMED = 420;   // ms of no detection before a real track dies
 const LOST_TENTATIVE = 140;   // an unconfirmed track dies fast
 const REACQUIRE_MS = 120;     // after this long coasting, a far blob re-acquires
 const BOUNCE_VY = 0.35;       // filtered vertical speed either side of a bounce
+const MIN_BALL_SPEED = 0.5;   // frame-widths/second — the ball moves; a drifting arm barely does
+const BALLISTIC_MIN = 0.3;    // how smooth the recent path must be to count as physical motion
 
 export class VisionReferee {
   constructor(video, overlay) {
@@ -397,6 +399,23 @@ export class VisionReferee {
     this._coast(t);
   }
 
+  /**
+   * How ballistic the recent motion is, 0..1. A flying ball traces a smooth
+   * arc — constant horizontal speed, gravity pulling it down — which fits a
+   * quadratic in time almost perfectly (a straight glide is the zero-gravity
+   * case and fits too). An arm's jitter does not. Returns 1 when there aren't
+   * enough points yet, so a fresh track isn't penalised.
+   */
+  _ballisticScore() {
+    const pts = this.trail.filter(p => !p.predicted).slice(-6);
+    if (pts.length < 4) return 1;
+    const t0 = pts[0].t;
+    const ts = pts.map(p => (p.t - t0) / 1000);
+    const rx = quadFitResidual(ts, pts.map(p => p.x));
+    const ry = quadFitResidual(ts, pts.map(p => p.y));
+    return clamp(1 - Math.hypot(rx, ry) / 0.02, 0, 1);
+  }
+
   /** Restart the track on a detection the model had stopped following. */
   _reseed(m, prevReject, t) {
     const dt = clamp((t - prevReject.t) / 1000, 1 / 125, 0.1);
@@ -482,7 +501,14 @@ export class VisionReferee {
     const x = xp + ALPHA * rx;
     const y = yp + ALPHA * ry;
     const hits = prev.hits + 1;
-    const confirmed = prev.confirmed || hits >= CONFIRM;
+    // Physical-motion gates: the ball is fast and flies smoothly. A slow,
+    // coherent drift (a waving arm) is fast enough to move but not to fly, and
+    // jittery motion isn't smooth — neither should confirm as the ball.
+    this._pushTrail(x, y, t, false);          // push first so the fit sees this point
+    const ballistic = this._ballisticScore();
+    const fastEnough = speed >= MIN_BALL_SPEED;
+    const confirmed = prev.confirmed ||
+      (hits >= CONFIRM && fastEnough && ballistic >= BALLISTIC_MIN);
     // The frame a track first confirms, adopt the ball's own colour as the
     // template so later frames track this specific ball, not a generic preset.
     if (confirmed && !prev.confirmed && m.color) this.ballTemplate = { ...m.color };
@@ -495,10 +521,10 @@ export class VisionReferee {
       this.onBallBounce({ x, y, t, side: this.sideOf({ x, y }), onTable: this.isOnTable({ x, y }) });
     }
 
-    this.track = { x, y, vx, vy, t, conf: m.conf ?? prev.conf, hits, misses: 0, confirmed };
+    const conf = (m.conf ?? prev.conf) * (0.5 + 0.5 * ballistic);
+    this.track = { x, y, vx, vy, t, conf, hits, misses: 0, confirmed, ballistic };
     this._checkBoundary({ x, y }, t);
     this._lastSeen = t;
-    this._pushTrail(x, y, t, false);
   }
 
   _coast(t) {
@@ -582,6 +608,34 @@ export class VisionReferee {
   setTable(corners) {
     const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * RMS residual of a least-squares quadratic fit y = a + b·t + c·t². Small when
+ * the samples lie on a smooth constant-acceleration curve (a flying ball),
+ * large when they jitter. Solves the 3×3 normal equations by Cramer's rule.
+ */
+function quadFitResidual(ts, ys) {
+  const n = ts.length;
+  let S0 = n, S1 = 0, S2 = 0, S3 = 0, S4 = 0, T0 = 0, T1 = 0, T2 = 0;
+  for (let i = 0; i < n; i++) {
+    const t = ts[i], y = ys[i], t2 = t * t;
+    S1 += t; S2 += t2; S3 += t2 * t; S4 += t2 * t2;
+    T0 += y; T1 += t * y; T2 += t2 * y;
+  }
+  const det = (a, b, c, d, e, f, g, h, i) =>
+    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  const D = det(S0, S1, S2, S1, S2, S3, S2, S3, S4);
+  if (Math.abs(D) < 1e-12) return 0;
+  const a = det(T0, S1, S2, T1, S2, S3, T2, S3, S4) / D;
+  const b = det(S0, T0, S2, S1, T1, S3, S2, T2, S4) / D;
+  const c = det(S0, S1, T0, S1, S2, T1, S2, S3, T2) / D;
+  let sse = 0;
+  for (let i = 0; i < n; i++) {
+    const pred = a + b * ts[i] + c * ts[i] * ts[i];
+    sse += (ys[i] - pred) ** 2;
+  }
+  return Math.sqrt(sse / n);
+}
     const net = [mid(corners[1], corners[2]), mid(corners[0], corners[3])];
     const centre = corners.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
     const halfA = [corners[0], corners[1], net[0], net[1]];
@@ -1247,6 +1301,34 @@ function expand(pts, centre, k) {
 
 const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * RMS residual of a least-squares quadratic fit y = a + b·t + c·t². Small when
+ * the samples lie on a smooth constant-acceleration curve (a flying ball),
+ * large when they jitter. Solves the 3×3 normal equations by Cramer's rule.
+ */
+function quadFitResidual(ts, ys) {
+  const n = ts.length;
+  let S0 = n, S1 = 0, S2 = 0, S3 = 0, S4 = 0, T0 = 0, T1 = 0, T2 = 0;
+  for (let i = 0; i < n; i++) {
+    const t = ts[i], y = ys[i], t2 = t * t;
+    S1 += t; S2 += t2; S3 += t2 * t; S4 += t2 * t2;
+    T0 += y; T1 += t * y; T2 += t2 * y;
+  }
+  const det = (a, b, c, d, e, f, g, h, i) =>
+    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  const D = det(S0, S1, S2, S1, S2, S3, S2, S3, S4);
+  if (Math.abs(D) < 1e-12) return 0;
+  const a = det(T0, S1, S2, T1, S2, S3, T2, S3, S4) / D;
+  const b = det(S0, T0, S2, S1, T1, S3, S2, T2, S4) / D;
+  const c = det(S0, S1, T0, S1, S2, T1, S2, S3, T2) / D;
+  let sse = 0;
+  for (let i = 0; i < n; i++) {
+    const pred = a + b * ts[i] + c * ts[i] * ts[i];
+    sse += (ys[i] - pred) ** 2;
+  }
+  return Math.sqrt(sse / n);
+}
 const cross = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 const sign = v => (v >= 0 ? 1 : -1);
 

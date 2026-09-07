@@ -501,3 +501,39 @@ test('position lookup interpolates between frames for audio sync', () => {
   assert.ok(Math.abs(at.x - (a + b) / 2) < 1e-6,
     `interpolated x ${at?.x.toFixed(3)} should be the midpoint of ${a.toFixed(3)} and ${b.toFixed(3)}`);
 });
+
+// --- conservative acquisition: don't lock onto anything that moves ---------
+
+test('jumpy, incoherent detections never confirm a track', () => {
+  const v = make();
+  // A different random spot every frame — arms, shadows, reflections, never a
+  // smooth trajectory. The tracker must not "confirm" and start drawing.
+  const spots = [[0.3,0.4],[0.7,0.6],[0.35,0.65],[0.72,0.42],[0.4,0.5],[0.68,0.63],[0.33,0.44],[0.71,0.58]];
+  for (const [x,y] of spots) step(v, { x, y });
+  assert.equal(v.isLocked, false, 'incoherent motion should never lock on');
+});
+
+test('a smooth run of detections does lock on', () => {
+  const v = make();
+  let x = 0.4;
+  for (let i = 0; i < 6; i++) { step(v, { x, y: 0.55 }); x += 0.03; }
+  assert.equal(v.isLocked, true, 'a smooth trajectory should lock on');
+});
+
+test('the marker stays hidden for the first few frames, until confirmed', () => {
+  const v = make();
+  let x = 0.4;
+  step(v, { x, y: 0.5 }); x += 0.03;
+  assert.equal(v.isLocked, false, 'not locked on the very first detection');
+  for (let i = 0; i < 4; i++) { step(v, { x, y: 0.5 }); x += 0.03; }
+  assert.equal(v.isLocked, true, 'locked once the run is confirmed');
+});
+
+test('the marker hides again when the ball is lost', () => {
+  const v = make();
+  let x = 0.4;
+  for (let i = 0; i < 6; i++) { step(v, { x, y: 0.5 }); x += 0.03; }
+  assert.equal(v.isLocked, true);
+  for (let i = 0; i < 6; i++) step(v, null);   // ball gone for several frames
+  assert.equal(v.isLocked, false, 'the marker hides while coasting/lost');
+});

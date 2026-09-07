@@ -36,6 +36,8 @@ body{
   background:#0f151d;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
 .pill.on{color:var(--ok);border-color:#1c4a2a}
 .pill.off{color:var(--bad);border-color:#4a1f1c}
+.pill.locked{color:var(--ok);border-color:#1c4a2a}
+.pill.searching{color:var(--warn);border-color:#4a3a1c}
 .icon{width:36px;height:36px;padding:0;font-size:17px;line-height:1;
   background:#1b232e;border:1px solid var(--line);border-radius:9px;color:var(--ink)}
 

@@ -145,6 +145,17 @@ The two sensors answer different questions, and neither is trusted alone.
   the ball *was* as well as where it is, and it loses the ball entirely
   whenever the ball slows down. Blobs that are too long and thin, or too
   sparse, are rejected as arms and shirt edges.
+- **The marker only shows when it's genuinely locked on.** Tracking a small,
+  fast, low-contrast ball from a single phone camera is at the edge of what a
+  browser can do, so the tracker is deliberately conservative: a track is
+  trusted only after four *coherent* detections in a row (a run that jumps
+  around is noise and is discarded, not confirmed), a confirmed track never
+  jumps to a far-off blob, and re-acquisition after a reversal requires a
+  self-consistent little run rather than any single surprise. When the tracker
+  is not sure, it draws nothing and the status shows "ball …" (searching)
+  rather than "ball ●" (locked) — an honest blank beats a marker flailing
+  around the room. This trades some missed tracking for not chasing arms,
+  shadows and shirts.
 - **A motion filter turns detections into a track.** Rather than snapping to
   wherever the detector fires each frame, positions feed a constant-velocity
   (alpha-beta) filter that estimates where the ball is *and how fast it is

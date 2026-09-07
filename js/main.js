@@ -248,7 +248,18 @@ $('btnStart').addEventListener('click', async () => {
 
   started = true;
   $('btnFlip').hidden = !(await vision.hasMultipleCameras());
-  setInterval(() => (els.fps.textContent = `${vision.fps} fps`), 500);
+  setInterval(() => {
+    els.fps.textContent = `${vision.fps} fps`;
+    const ball = $('ballStatus');
+    if (vision.tracking) {
+      ball.hidden = false;
+      const locked = vision.isLocked;
+      ball.className = 'pill ' + (locked ? 'locked' : 'searching');
+      ball.textContent = locked ? 'ball ●' : 'ball …';
+    } else {
+      ball.hidden = true;
+    }
+  }, 250);
   beginCalibration();
 });
 

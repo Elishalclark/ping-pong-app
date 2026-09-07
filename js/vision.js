@@ -21,7 +21,9 @@ const BALL_M = 0.04;
 // throw the track. All positions are normalised 0..1, velocities per second.
 const ALPHA = 0.6;
 const BETA = 0.32;
-const CONFIRM = 3;        // detections before a track is trusted
+const CONFIRM = 4;        // consecutive COHERENT detections before a track is trusted
+const COHERE_GATE = 0.09; // how far a tentative detection may sit from its prediction
+const RESEED_RADIUS = 0.22; // a reversal is local; a distractor jumps — only re-seed near
 const V_MAX = 9;          // clamp on estimated speed (frame-widths / second)
 const LOST_CONFIRMED = 420;   // ms of no detection before a real track dies
 const LOST_TENTATIVE = 140;   // an unconfirmed track dies fast
@@ -355,10 +357,16 @@ export class VisionReferee {
       // distinction that matters: coasting is for when the ball is *not seen*
       // (occlusion); a ball that IS seen, just not where predicted, means the
       // model is wrong, not that the ball vanished.
+      // Re-seed only on a self-coherent run of surprises: two in a row that
+      // sit close to each OTHER form a smooth little trajectory, which is what
+      // a real ball reversing (after a bounce or a hit) looks like — even when
+      // it has travelled far from the stale track. A distractor that merely
+      // flickers around produces surprises scattered apart, and is ignored.
       const lr = this._lastReject;
       this._lastReject = { x: found.x, y: found.y, t };
       this._rejectStreak = (this._rejectStreak || 0) + 1;
-      if (this._rejectStreak >= 2 && lr && t > lr.t) {
+      if (this._rejectStreak >= 2 && lr && t > lr.t &&
+          Math.hypot(found.x - lr.x, found.y - lr.y) < RESEED_RADIUS) {
         this._reseed(found, lr, t);
         this._rejectStreak = 0;
         this._lastReject = null;
@@ -398,8 +406,11 @@ export class VisionReferee {
     const r = Math.hypot(m.x - xp, m.y - yp);
     const speed = Math.hypot(p.vx, p.vy);
     const gate = 0.1 + speed * dt * 2.5 + 0.05 * p.misses;
-    if (r <= gate) return true;
-    return t - this._lastSeen > REACQUIRE_MS;
+    // A confirmed track never jumps to a far detection. If the ball is truly
+    // lost the track is dropped and re-acquired cleanly (four coherent frames
+    // again), which is safe; letting a far blob in is how the marker "goes
+    // everywhere".
+    return r <= gate;
   }
 
   _integrate(m, t) {
@@ -419,6 +430,19 @@ export class VisionReferee {
     const xp = prev.x + prev.vx * dt;
     const yp = prev.y + prev.vy * dt;
     const rx = m.x - xp, ry = m.y - yp;
+
+    // Before a track is confirmed, every detection must continue the motion
+    // smoothly. A run that jumps around is noise — an arm here, a reflection
+    // there — so restart the tentative track on the new point rather than
+    // letting incoherent blobs accumulate into a false "confirmation". This is
+    // what stops the marker locking onto anything that moves.
+    if (!prev.confirmed && prev.hits >= 2 && Math.hypot(rx, ry) > COHERE_GATE) {
+      this.track = { x: m.x, y: m.y, vx: 0, vy: 0, t, conf: m.conf ?? 0.5,
+                     hits: 1, misses: 0, confirmed: false };
+      this._lastSeen = t;
+      this._pushTrail(m.x, m.y, t, false);
+      return;
+    }
 
     // While the track is still young the velocity estimate is unreliable, so
     // seed it directly from the frame-to-frame difference instead of nudging
@@ -595,6 +619,12 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     this.procWidth = Math.round(Math.min(288, Math.max(144, wanted)) / 8) * 8;
     this.minProcWidth = Math.max(128, Math.round(this.procWidth * 0.7));
     this.prev = null; this.bg = null;
+  }
+
+  /** True only when the tracker is genuinely locked on the ball (confirmed
+   *  and still being seen) — the same condition that draws the marker. */
+  get isLocked() {
+    return !!(this.track && this.track.confirmed && this.track.misses < 4);
   }
 
   /** Start or stop hunting for the ball. */
@@ -859,16 +889,22 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
     if (!this.showDebug) return;
 
-    if (this.trail.length > 1) {
+    // Only draw the marker when the tracker is genuinely locked on: a
+    // confirmed track that is still being seen (not coasting for long). When
+    // it isn't sure, it shows nothing — an honest blank beats a marker
+    // flailing around the room chasing arms and shadows.
+    const locked = this.track && this.track.confirmed && this.track.misses < 4;
+    if (!locked) return;
+
+    const recent = this.trail.filter(p => this.track.t - p.t < 260);
+    if (recent.length > 1) {
       ctx.strokeStyle = 'rgba(255,220,80,.55)'; ctx.lineWidth = 2;
       ctx.beginPath();
-      this.trail.forEach((p, i) => (i ? ctx.lineTo(p.x * W, p.y * H) : ctx.moveTo(p.x * W, p.y * H)));
+      recent.forEach((p, i) => (i ? ctx.lineTo(p.x * W, p.y * H) : ctx.moveTo(p.x * W, p.y * H)));
       ctx.stroke();
     }
-    if (this.track) {
-      ctx.strokeStyle = '#ffdc50'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(this.track.x * W, this.track.y * H, 10, 0, Math.PI * 2); ctx.stroke();
-    }
+    ctx.strokeStyle = '#ffdc50'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(this.track.x * W, this.track.y * H, 10, 0, Math.PI * 2); ctx.stroke();
   }
 
   /** A big letter on a chip, centred in one half of the table. */

@@ -28,6 +28,45 @@ test('service bouncing twice on the server’s half is a point to the receiver',
   assert.deepEqual(e.score, { A: 0, B: 1 });
 });
 
+test('returning the serve before it bounces on the receiver’s side is a fault on the receiver', () => {
+  // The serve legally bounces once on the SERVER's own half, but the
+  // receiver smashes it out of the air before it ever reaches (let alone
+  // bounces on) their own side. This must be a fault, even though exactly
+  // one bounce is on record — that one bounce was on the wrong side.
+  const e = engine(); serve(e);
+  const calls = rally(e,
+    { type: 'hit', side: 'A' },
+    { type: 'bounce', side: 'A' },
+    { type: 'hit', side: 'B' });
+  assert.deepEqual(e.score, { A: 1, B: 0 }, 'the server should win the point');
+  const point = calls.find(c => c.type === 'point');
+  assert.equal(point.side, 'A');
+});
+
+test('a legal return after the serve bounces on both sides is still fine', () => {
+  // Companion to the case above: once the serve has genuinely bounced on
+  // BOTH sides, the receiver returning it must still be legal — the new
+  // check must not start rejecting real returns.
+  const e = engine(); serve(e);
+  const calls = rally(e,
+    { type: 'hit', side: 'A' },
+    { type: 'bounce', side: 'A' },
+    { type: 'bounce', side: 'B' },
+    { type: 'hit', side: 'B' });
+  assert.equal(calls.filter(c => c.type === 'point').length, 0, 'no fault should be called');
+  assert.deepEqual(e.score, { A: 0, B: 0 });
+});
+
+test('volleying the serve before it bounces at all is still caught the same way', () => {
+  // The pre-existing case (zero bounces at all) must still work once the new
+  // check for the one-bounce-on-the-wrong-side case is added alongside it.
+  const e = engine(); serve(e);
+  const calls = rally(e,
+    { type: 'hit', side: 'A' },
+    { type: 'hit', side: 'B' });
+  assert.deepEqual(e.score, { A: 1, B: 0 });
+});
+
 test('net-cord service that still lands good is a let, and nobody scores', () => {
   const e = engine(); serve(e);
   const calls = rally(e,

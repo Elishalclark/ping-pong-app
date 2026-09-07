@@ -98,6 +98,21 @@ export class RulesEngine {
     if (side === r.lastHitter) {
       return this._point(other(side), 'struck the ball twice', ev.confidence);
     }
+    // The receiver's first stroke against a serve needs its own check before
+    // the generic ones below. During the serve, _onBounce deliberately
+    // overwrites bouncesSinceHit to hold just the MOST RECENT bounce, so a
+    // legal serve — one bounce on the server's own half, then one on the
+    // receiver's — isn't miscounted as two bounces the receiver has to
+    // answer for. But that compression has a blind spot: a bounce on the
+    // server's own half alone also leaves bouncesSinceHit as one element,
+    // identical to a legal bounce actually on the receiver's half. Read from
+    // serveBounces (which is never overwritten) instead: fewer than two
+    // means the serve hasn't reached the receiver's side yet at all, so
+    // returning it now — even though "one bounce" is on record — is really
+    // volleying the serve out of the air.
+    if (this.phase === 'serve' && r.strokes === 1 && r.serveBounces.length < 2) {
+      return this._point(other(side), 'returned the serve before it bounced on their side', ev.confidence);
+    }
     if (bounces.length === 0) {
       // Volley — obstructing the ball before it bounced on your own half.
       return this._point(other(side), 'volleyed the ball', ev.confidence);

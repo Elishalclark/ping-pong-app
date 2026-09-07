@@ -311,6 +311,13 @@ A fault always belongs to whoever is serving, so the manual **Fault** button
 needs no player chosen — it charges the current server. Undo restores the
 fault count along with the score.
 
+The receiver returning the serve before it bounces on their own side is a
+point to the server, even though the serve already legally bounced once (on
+the SERVER's side) by then — the rules engine tracks the serve's two required
+bounces separately from the generic "one bounce since the last stroke" count
+a rally return is judged against, specifically so a bounce on the wrong side
+of that pair can't be mistaken for the right one.
+
 ## The out-of-bounds line
 
 The red dashed line around the table is the boundary. When the tracked ball

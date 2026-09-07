@@ -226,3 +226,15 @@ input[type=range]{width:100%;height:34px;accent-color:var(--a)}
   .meters,.actions,.tabs{padding-left:0;padding-right:0}
   .tabpanel{flex:1;min-height:0;overflow-y:auto;padding:12px 0}
 }
+
+
+/* --- two-device pairing --- */
+.qrbox{display:flex;justify-content:center;padding:14px;background:#fff;border-radius:10px;margin:10px 0}
+.qrbox img,.qrbox canvas{width:min(74vw,300px);height:auto;image-rendering:pixelated}
+.scanwrap{aspect-ratio:1/1;max-height:60vh;border-radius:10px;margin:10px 0}
+.scanwrap video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.scan-frame{position:absolute;inset:14%;border:3px solid var(--a);border-radius:12px;
+  box-shadow:0 0 0 100vmax rgba(0,0,0,.35)}
+#syncStatus.on{color:var(--ok);border-color:#1c4a2a}
+#syncStatus.off{color:var(--bad);border-color:#4a1f1c}
+.pill.peer{position:fixed;top:calc(10px + var(--safe-t));left:50%;transform:translateX(-50%);z-index:20}

@@ -53,11 +53,11 @@
       </div>
 
       <div id="calibHint" class="calib-hint" hidden>
-        <span id="calibText">Point the phone at the empty table, then tap <b>Take photo</b> — or just <b>tap the table</b> in the picture. Drag the box by hand any time.</span>
+        <span id="calibText"><b>Drag each corner</b> of the box onto the table — that's the accurate way. (Or tap <b>Take photo</b> to guess the box, then fix any corner that's off.)</span>
         <span class="calib-actions">
-          <button id="btnScan" class="primary">📷 Take photo of table</button>
+          <button id="btnCalibDone" class="primary">Use this box</button>
+          <button id="btnScan">📷 Take photo</button>
           <button id="btnSwapEnds">Swap ends</button>
-          <button id="btnCalibDone">Use this box</button>
         </span>
       </div>
       <div id="rotateHint" class="rotate-hint" hidden>Turn the phone sideways for a better view of the table</div>
@@ -107,6 +107,26 @@
   </section>
 
   <section class="tabpanel" id="tab-setup" role="tabpanel">
+    <h2 class="sec">Second phone</h2>
+    <p class="note" style="margin-top:0">Use two phones for both angles — one score shared between them. Either phone can make calls.</p>
+    <div class="controls tight" id="syncButtons">
+      <button id="btnHost">Host on this phone</button>
+      <button id="btnJoin">Join with a QR</button>
+    </div>
+    <div id="syncPanel" hidden>
+      <div id="syncStep" class="note"></div>
+      <div id="qrBox" class="qrbox" hidden></div>
+      <div class="video-wrap scanwrap" id="scanWrap" hidden>
+        <video id="scanVideo" playsinline muted></video>
+        <div class="scan-frame"></div>
+      </div>
+      <div class="controls tight">
+        <button id="btnSyncNext" hidden></button>
+        <button id="btnSyncCancel" class="link">cancel</button>
+      </div>
+      <div id="syncStatus" class="pill" hidden>not connected</div>
+    </div>
+
     <h2 class="sec">Match</h2>
     <div class="rows">
       <label>First server <select id="firstServer"><option value="A">A</option><option value="B">B</option></select></label>
@@ -159,6 +179,9 @@
 
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

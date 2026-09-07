@@ -63,19 +63,21 @@ no browser bars, and works with no signal at all.
    The app deliberately turns off the browser's noise suppression, echo
    cancellation and auto gain — phones enable all three by default, and all
    three are designed to remove exactly the kind of short click a ball makes.
-3. **Tap Start**, then **place the box**. Point the phone at the empty table
-   and either tap **📷 Take photo of table** (it guesses the table is in the
-   middle of the frame) or — more reliably — just **tap the table** in the
-   picture. Tapping seeds the scan from that exact spot and colour, so it works
-   even when the table is off to one side or the floor is a similar colour.
-   Check the box, correct any corner by dragging, then **Use this box**. You
-   can always place the box entirely by hand: drag its middle to move it, a
-   corner to reshape it. A magnifier appears under your finger so you can place
-   a corner precisely. **Swap ends** flips which end is Player A's. Tap
-   **Done** when it fits. Each half is labelled **A** and **B** in the same
-   colours as the scoreboard, so you can see at a glance whose end is whose.
-   The box is what tells the referee where the table is, and it stays
-   draggable afterwards — nudge a corner rather than starting over.
+3. **Tap Start**, then **place the box**. The accurate way is to do it by
+   hand: **drag each corner** of the box onto the actual corner of the table.
+   A magnifier appears under your finger so you can place it precisely, and
+   drag the middle of the box to slide the whole thing into position first.
+   This is exact, and it's one-time — the phone sits in one spot for the
+   match, so ten seconds here is all it costs. **Swap ends** flips which end
+   is Player A's; each half is labelled **A** and **B** in the scoreboard's
+   colours. Tap **Use this box** when it's on the table.
+
+   There's also **📷 Take photo**, which guesses the table's outline from the
+   picture automatically. It's a shortcut, not a substitute — automatic
+   detection can be thrown off by glare, clutter, or a table colour close to
+   the floor's — so treat whatever it draws as a starting point and drag any
+   corner that's off. The box stays draggable at any time, before or after
+   you tap Use this box.
 4. **Begin match.** The ball marker only appears once a match is running —
    before that there is nothing for it to track, and showing it would just
    chase movement around the room. Keep the app in the foreground: a backgrounded phone stops
@@ -265,6 +267,33 @@ Move the line with **Setup → Out-of-bounds line**: push it out if good shots
 are being called out, pull it in if balls sail away uncalled. A sound heard
 from beyond the line is treated as the ball hitting the floor, never as a
 stroke.
+
+## Two phones, one game
+
+You can pair a second phone so each player's end has its own camera angle,
+with one shared score between them. Under **Setup → Second phone**:
+
+- On one phone, tap **Host on this phone**. It shows a QR code.
+- On the other, tap **Join with a QR** and scan it. It shows a code back.
+- Back on the host, tap **Scan their reply** and scan that second code.
+
+That's the whole handshake — after it the two phones talk to each other
+directly (WebRTC), with no server and no account. The **host's** camera and
+microphone make the automatic calls; the **guest** mirrors the score and its
+own camera is there for the guest to watch their end and use for manual
+corrections, which route to the host and apply to the one shared game.
+Point A / Point B / Let / Fault / Undo work from either phone.
+
+Pairing needs both phones to actually see each other's screens once each way
+(to scan the QR codes) — after that they can be repositioned anywhere on the
+same Wi-Fi, or even different networks (a public STUN server helps them find
+each other, though very restrictive networks can still block it). If the
+connection drops, re-pair from the same panel.
+
+This is new and the honest caveat is: I can generate and exchange the pairing
+codes and prove the data channel works, but I can't test two real phones
+scanning each other's screens from here — if the QR scan itself is fiddly on
+your hardware, tell me what you see and I'll tighten it.
 
 ## What it gets right, and what it won't
 

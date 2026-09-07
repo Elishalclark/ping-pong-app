@@ -1,6 +1,7 @@
 import { VisionReferee } from './vision.js';
 import { AudioReferee } from './audio.js';
 import { Referee } from './referee.js';
+import { PeerLink } from './sync.js';
 
 const $ = id => document.getElementById(id);
 const els = {
@@ -395,6 +396,9 @@ function onCall(call, state) {
   else if (call.type === 'let') announce(`Let${onService ? ' on the service' : ''}. Serve again. ${score}`);
   else if (isFault) announce(`Fault${onService ? ' on the service' : ''}, ${call.offender}. Point ${call.side}. ${score}`);
   else announce(`Point ${call.side}. ${score}`);
+
+  // Share the outcome with the paired phone.
+  broadcastState({ type: call.type, side: call.side, label });
 }
 
 function onEvent(ev) {
@@ -499,26 +503,27 @@ document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', (
     p.classList.toggle('active', p.id === `tab-${tab.dataset.tab}`));
 }));
 
+const other = s => (s === 'A' ? 'B' : 'A');
+
 document.querySelectorAll('[data-award]').forEach(b => b.addEventListener('click', () => {
   if (!referee) return;
-  referee.engine.award(b.dataset.award).forEach(c => onCall(c, referee.engine.state));
+  if (sendRemoteAction('award', b.dataset.award)) return;   // guest → host
+  applyAction('award', b.dataset.award);
 }));
 $('btnLet').addEventListener('click', () => {
   if (!referee) return;
-  referee.engine.callLet().forEach(c => onCall(c, referee.engine.state));
+  if (sendRemoteAction('let')) return;
+  applyAction('let');
 });
 $('btnFault').addEventListener('click', () => {
   if (!referee) return;
-  // A fault is always the server's, so there is nothing to choose.
-  const server = referee.engine.server;
-  referee.engine.award(other(server), 'service fault called by the umpire', 'fault')
-    .forEach(c => onCall(c, referee.engine.state));
+  if (sendRemoteAction('fault')) return;
+  applyAction('fault');
 });
-const other = s => (s === 'A' ? 'B' : 'A');
-
 $('btnUndo').addEventListener('click', () => {
   if (!referee) return;
-  if (referee.engine.undo()) { render(referee.engine.state); log('undo', 'info', 1); buzz(25); }
+  if (sendRemoteAction('undo')) return;
+  if (referee.engine.undo()) { render(referee.engine.state); log('undo', 'info', 1); buzz(25); broadcastState(); }
 });
 $('btnReset').addEventListener('click', () => {
   if (!referee) return;
@@ -602,7 +607,205 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 
 // A handle on the working parts, for debugging on a device where there is no
 // console to hand and for driving the app from tests.
-window.umpire = { get vision() { return vision; }, get audio() { return audio; }, get referee() { return referee; } };
+window.umpire = { get vision() { return vision; }, get audio() { return audio; }, get referee() { return referee; }, get link() { return link; }, get isHost() { return isHost; }, get peered() { return peered; } };
+
+
+
+// =========================================================================
+// Two-device shared play: pair by QR, share one score over WebRTC
+// =========================================================================
+// One phone hosts (holds the authoritative game); the other joins and mirrors
+// it. Either phone's manual calls act on the one shared game, and both cameras
+// give their own angle. The pairing exchanges an offer/answer by QR — the host
+// shows a code, the guest scans and shows one back, the host scans that.
+
+let link = null;
+let isHost = false;
+let peered = false;
+let scanStop = null;
+
+function syncSay(html) { $('syncStep').innerHTML = html; }
+function showPanel(on) {
+  $('syncPanel').hidden = !on;
+  $('syncButtons').hidden = on;
+}
+function setPeerStatus(connected) {
+  peered = connected;
+  const s = $('syncStatus');
+  s.hidden = false;
+  s.textContent = connected ? `connected (${isHost ? 'host' : 'guest'})` : 'not connected';
+  s.className = 'pill ' + (connected ? 'on' : 'off');
+  let pill = $('peerPill');
+  if (!pill) {
+    pill = document.createElement('span');
+    pill.id = 'peerPill'; pill.className = 'pill peer';
+    document.body.appendChild(pill);
+  }
+  pill.textContent = connected ? `2 phones · ${isHost ? 'host' : 'guest'}` : '';
+  pill.hidden = !connected;
+}
+
+function drawQR(text) {
+  const box = $('qrBox');
+  box.hidden = false;
+  box.innerHTML = '';
+  // qrcode-generator picks the smallest version that fits; error level L for capacity.
+  const qr = qrcode(0, 'L');
+  qr.addData(text);
+  qr.make();
+  box.innerHTML = qr.createImgTag(4, 8);
+}
+
+async function scanQR() {
+  const wrap = $('scanWrap'), video = $('scanVideo');
+  wrap.hidden = false;
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  video.srcObject = stream; await video.play();
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  return new Promise((resolve, reject) => {
+    let stopped = false;
+    scanStop = () => {
+      stopped = true;
+      stream.getTracks().forEach(t => t.stop());
+      wrap.hidden = true; scanStop = null;
+      reject(new Error('cancelled'));
+    };
+    const tick = () => {
+      if (stopped) return;
+      if (video.readyState >= 2) {
+        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(img.data, img.width, img.height);
+        if (code && code.data) {
+          stopped = true;
+          stream.getTracks().forEach(t => t.stop());
+          wrap.hidden = true; scanStop = null;
+          return resolve(code.data);
+        }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+function newLink() {
+  link = new PeerLink();
+  link.onOpen = () => {
+    setPeerStatus(true);
+    $('qrBox').hidden = true;
+    $('btnSyncNext').hidden = true;
+    if (isHost) {
+      syncSay('<b>Connected.</b> This phone is the host — its camera and mic make the automatic calls. The score is shared to the other phone.');
+      broadcastState();                          // send the guest the current score
+    } else {
+      // The guest's own camera/mic must not keep scoring independently — that
+      // would drift from the host's engine. It stops judging locally and only
+      // mirrors the host's score; its camera stays up so the guest can watch
+      // their end and use it for manual corrections (routed to the host).
+      referee?.stop();
+      syncSay('<b>Connected.</b> The host phone makes the automatic calls; this phone mirrors the score. Point A / Point B / Let / Fault / Undo here still act on the shared game.');
+    }
+  };
+  link.onClose = () => { setPeerStatus(false); syncSay('Disconnected. Re-pair to reconnect.'); };
+  link.onMessage = onPeerMessage;
+}
+
+$('btnHost').addEventListener('click', async () => {
+  isHost = true; showPanel(true);
+  syncSay('Creating a code…');
+  try {
+    newLink();
+    const offer = await link.createOffer();
+    drawQR(offer);
+    syncSay('On the <b>other</b> phone tap <b>Join with a QR</b> and scan this. Then tap <b>Scan their reply</b>.');
+    const next = $('btnSyncNext');
+    next.hidden = false; next.textContent = 'Scan their reply';
+    next.onclick = async () => {
+      try {
+        const answer = await scanQR();
+        await link.acceptAnswer(answer);
+        syncSay('Pairing… hold still.');
+      } catch (e) { if (e.message !== 'cancelled') syncSay('Scan failed: ' + e.message); }
+    };
+  } catch (e) { syncSay('Could not host: ' + e.message); }
+});
+
+$('btnJoin').addEventListener('click', async () => {
+  isHost = false; showPanel(true);
+  syncSay('Point this phone at the <b>host phone’s QR</b>.');
+  try {
+    newLink();
+    const offer = await scanQR();
+    const answer = await link.answerOffer(offer);
+    drawQR(answer);
+    syncSay('Now on the <b>host</b> phone tap <b>Scan their reply</b> and scan THIS code.');
+  } catch (e) { if (e.message !== 'cancelled') syncSay('Could not join: ' + e.message); }
+});
+
+$('btnSyncCancel').addEventListener('click', () => {
+  scanStop?.();
+  link?.close(); link = null;
+  showPanel(false);
+  setPeerStatus(false);
+});
+
+// --- shared game state -------------------------------------------------
+
+function gameState() {
+  const e = referee?.engine;
+  if (!e) return null;
+  return { score: e.score, games: e.games, faults: e.faults, server: e.server,
+           gamePoints: e.gamePoints, matchOver: e.matchOver };
+}
+
+function broadcastState(call) {
+  if (!link || !peered || !isHost) return;
+  link.send({ type: 'state', state: gameState(), call: call || null });
+}
+
+// Guest → host: a manual action taken on the guest phone.
+function sendRemoteAction(action, side) {
+  if (link && peered && !isHost) { link.send({ type: 'action', action, side }); return true; }
+  return false;
+}
+
+function onPeerMessage(msg) {
+  if (!msg) return;
+  if (msg.type === 'state' && !isHost) {
+    // Guest mirrors the host's authoritative score.
+    const st = msg.state; if (!st || !referee) return;
+    Object.assign(referee.engine.score, st.score);
+    Object.assign(referee.engine.games, st.games);
+    Object.assign(referee.engine.faults, st.faults);
+    referee.engine.server = st.server;
+    referee.engine.matchOver = st.matchOver;
+    render(referee.engine.state);
+    if (msg.call && msg.call.type && msg.call.type !== 'info') {
+      const label = msg.call.label || `${msg.call.type} ${msg.call.side || ''}`.trim();
+      say(`<b>${label}</b>`, msg.call.type === 'let' ? 'let' : 'point');
+      showScore();
+    }
+  } else if (msg.type === 'action' && isHost && referee) {
+    // Host applies an action requested by the guest, then rebroadcasts.
+    applyAction(msg.action, msg.side);
+  }
+}
+
+// Apply a manual action locally (used by both the local buttons and remote).
+function applyAction(action, side) {
+  if (!referee) return;
+  const e = referee.engine;
+  let calls = [];
+  if (action === 'award') calls = e.award(side);
+  else if (action === 'let') calls = e.callLet();
+  else if (action === 'fault') calls = e.award(other(e.server), 'service fault called by the umpire', 'fault');
+  else if (action === 'undo') { if (e.undo()) { render(e.state); showScore(); } }
+  calls.forEach(c => onCall(c, e.state));
+}
+
 
 render({ score: { A: 0, B: 0 }, games: { A: 0, B: 0 }, server: 'A' });
 checkOrientation();

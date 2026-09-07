@@ -58,7 +58,7 @@ export class VisionReferee {
     // 1 (only a textbook ball locks on). The right value depends on the room,
     // the ball and the lighting, which only the user can see — so it is a
     // slider, defaulted to lean toward tracking.
-    this.strictness = 0.35;
+    this.strictness = 0.2;
     this._applyStrictness();
     this.ballTemplate = null;   // the ACTUAL ball's colour, learned once locked on
     this.onCameraLost = () => {};
@@ -348,7 +348,8 @@ export class VisionReferee {
       let sizeFit = 1;
       if (expect > 0) {
         const dim = Math.max(bw, bh);
-        if (dim > expect * 3.5 || dim < expect * 0.45) continue;
+        const sTol = this._sizeTol ?? 1;
+        if (dim > expect * 3.5 * sTol || dim < expect * 0.45 / sTol) continue;
         sizeFit = 1 / (1 + Math.abs(dim - expect) / expect);
       } else if (c.n > 90) {
         continue;                            // uncalibrated: fall back to a cap
@@ -741,9 +742,26 @@ function quadFitResidual(ts, ys) {
   _applyStrictness() {
     const k = this.strictness;
     this._confirm = Math.round(2 + 3 * k);        // 2..5 coherent frames to trust
-    this._minSpeed = 0.12 + 0.7 * k;              // 0.12..0.82 frame-widths/s
+    // The alpha-beta filter's smoothed velocity briefly overshoots above a
+    // drift's true steady-state speed during the first couple of confirming
+    // frames, so the floor needs headroom over the nominal "arm speed", not
+    // just to clear it at steady state.
+    this._minSpeed = 0.20 + 0.62 * k;             // 0.20..0.82 frame-widths/s
     this._ballisticMin = 0.05 + 0.45 * k;         // 0.05..0.5 path smoothness
     this._acqColorFloor = 0.3 + 0.35 * k;         // 0.3..0.65 colour match to acquire
+    // Everything above only ever controlled HOW a track is confirmed and
+    // held. The colour and size windows in ballColorScore/_findBall were
+    // fixed constants regardless of this dial, which meant turning
+    // strictness all the way down still could not fix a ball that kept
+    // failing on colour under real, uneven lighting — the slider looked
+    // like it did nothing. They now widen at low strictness too, but only up
+    // to a point: skin is noticeably less saturated than any regulation ball
+    // colour, and that margin is kept intact even at strictness 0, on
+    // purpose. Rejecting a hand is a correctness floor, not a preference —
+    // the slider is for how patient the tracker is about a real ball, never
+    // for whether it's willing to track an arm.
+    this._colorTol = 1.2 - 0.2 * k;                // 1.2 (loose) .. 1.0 (tight)
+    this._sizeTol = 1 + 0.8 * (1 - k);             // 1.8 (loose) .. 1 (tight)
   }
 
   /** Sample the ball's colour from a patch of the current frame (tap the ball). */
@@ -778,13 +796,15 @@ function quadFitResidual(ts, ys) {
     // colour — tighter and more specific than the white/orange preset, and it
     // adapts to the exact ball and lighting. It falls back to the preset the
     // moment the ball is lost.
+    const tol = this._colorTol ?? 1.5;   // widened by strictness — see _applyStrictness
     if (this.ballTemplate) {
       const c = this.ballTemplate;
       const t1 = r + g + bl + 1, t2 = c.r + c.g + c.b + 1;
       const dc = Math.abs(r / t1 - c.r / t2) + Math.abs(g / t1 - c.g / t2);
       const dl = Math.abs((r + g + bl) / 3 - (c.r + c.g + c.b) / 3);
-      if (dc > 0.07 || dl > 90) return { pass: false, score: 0 };
-      return { pass: true, score: 0.4 + 0.6 * clamp(1 - dc / 0.07, 0, 1) };
+      const dcMax = 0.07 * tol, dlMax = 90 * tol;
+      if (dc > dcMax || dl > dlMax) return { pass: false, score: 0 };
+      return { pass: true, score: 0.4 + 0.6 * clamp(1 - dc / dcMax, 0, 1) };
     }
     const max = Math.max(r, g, bl), min = Math.min(r, g, bl);
     const v = max, sat = max === 0 ? 0 : (max - min) / max;
@@ -792,9 +812,10 @@ function quadFitResidual(ts, ys) {
       // A white ball is bright and nearly colourless. Skin, wood and warm
       // lighting are all more saturated than this, which is what separates
       // them out.
-      if (v < 105 || sat > 0.25) return { pass: false, score: 0 };
-      const bright = clamp((v - 105) / 150, 0, 1);
-      const white = clamp(1 - sat / 0.25, 0, 1);
+      const satMax = 0.25 * tol, vMin = 105 / tol;
+      if (v < vMin || sat > satMax) return { pass: false, score: 0 };
+      const bright = clamp((v - vMin) / 150, 0, 1);
+      const white = clamp(1 - sat / satMax, 0, 1);
       return { pass: true, score: 0.35 + 0.65 * bright * white };
     }
     if (this.ballColor === 'orange') {
@@ -807,9 +828,10 @@ function quadFitResidual(ts, ys) {
       if (h < 0) h += 360;
       // Orange balls are vividly saturated; skin shares the hue but is far
       // less saturated, so a high saturation floor is what tells them apart.
-      const hueOk = h >= 8 && h <= 48;
-      if (!hueOk || sat < 0.5 || v < 80) return { pass: false, score: 0 };
-      const hueFit = 1 - Math.abs(h - 28) / 20;
+      const hueSpread = 20 * tol, satMin = 0.5 / tol, vMin = 80 / tol;
+      const hueOk = h >= 28 - hueSpread && h <= 28 + hueSpread;
+      if (!hueOk || sat < satMin || v < vMin) return { pass: false, score: 0 };
+      const hueFit = 1 - Math.abs(h - 28) / hueSpread;
       return { pass: true, score: 0.35 + 0.65 * clamp(hueFit, 0, 1) * clamp(sat, 0, 1) };
     }
     // Sampled colour: compare chromaticity and brightness.
@@ -817,8 +839,9 @@ function quadFitResidual(ts, ys) {
     const t1 = r + g + bl + 1, t2 = c.r + c.g + c.b + 1;
     const dc = Math.abs(r / t1 - c.r / t2) + Math.abs(g / t1 - c.g / t2);
     const dl = Math.abs((r + g + bl) / 3 - (c.r + c.g + c.b) / 3);
-    if (dc > 0.08 || dl > 110) return { pass: false, score: 0 };
-    return { pass: true, score: 0.4 + 0.6 * clamp(1 - dc / 0.08, 0, 1) };
+    const dcMax = 0.08 * tol, dlMax = 110 * tol;
+    if (dc > dcMax || dl > dlMax) return { pass: false, score: 0 };
+    return { pass: true, score: 0.4 + 0.6 * clamp(1 - dc / dcMax, 0, 1) };
   }
 
   /** True only when the tracker is genuinely locked on the ball (confirmed

@@ -737,3 +737,106 @@ test('the marker hides again when the ball is lost', () => {
   for (let i = 0; i < 6; i++) step(v, null);   // ball gone for several frames
   assert.equal(v.isLocked, false, 'the marker hides while coasting/lost');
 });
+
+// --- only a round, ball-like blob is tracked --------------------------------
+// These pin down the fix for "the tracker focuses on every little thing": the
+// scoring used to prefer the smallest, most degenerate blob in the frame, so
+// a two-pixel speck beat the actual ball (measured 22.4 vs 14.7 at equal
+// brightness) and the marker chased sensor noise around the table.
+
+/** Paint an exact set of pixels bright on a table-coloured frame. */
+function pixelFrame(w, h, pixels, base = [70, 74, 78]) {
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    data[i * 4] = base[0]; data[i * 4 + 1] = base[1]; data[i * 4 + 2] = base[2]; data[i * 4 + 3] = 255;
+  }
+  for (const [x, y] of pixels) {
+    const px = Math.round(x), py = Math.round(y);
+    if (px < 0 || py < 0 || px >= w || py >= h) continue;
+    const i = (py * w + px) * 4;
+    data[i] = 248; data[i + 1] = 248; data[i + 2] = 248;
+  }
+  return { data };
+}
+
+/** Two blank frames to learn the background, then the frame under test. */
+function detectPixels(v, w, h, pixels, track = null) {
+  v.prev = null; v.bg = null; v.track = null;
+  v._findBall(pixelFrame(w, h, []), w, h, 0);
+  v._findBall(pixelFrame(w, h, []), w, h, 16);
+  v.track = track;
+  return v._findBall(pixelFrame(w, h, pixels), w, h, 32);
+}
+
+const blockAt = (x, y, wide, tall) => {
+  const out = [];
+  for (let dy = 0; dy < tall; dy++) for (let dx = 0; dx < wide; dx++) out.push([x + dx, y + dy]);
+  return out;
+};
+
+test('a two-pixel speck is not taken for the ball', () => {
+  const v = make();
+  v.setBallColor('white');
+  const w = 240, h = 180;
+  const found = detectPixels(v, w, h, blockAt(0.45 * w, 0.55 * h, 2, 1));
+  assert.equal(found, null, 'a 2px speck has no shape and is far too small to be the ball');
+});
+
+test('scattered bright specks do not out-score the actual ball', () => {
+  const v = make();
+  v.setBallColor('white');
+  const w = 240, h = 180, centre = { x: 0.5, y: 0.6 };
+  const ball = blockAt(centre.x * w - 1, centre.y * h - 1, 3, 3);
+  const specks = [
+    ...blockAt(0.40 * w, 0.50 * h, 2, 1),
+    ...blockAt(0.60 * w, 0.52 * h, 2, 1),
+    ...blockAt(0.55 * w, 0.66 * h, 1, 2),
+  ];
+  const found = detectPixels(v, w, h, [...ball, ...specks]);
+  assert.ok(found, 'the ball should still be found among the clutter');
+  assert.ok(Math.abs(found.x - centre.x) < 0.04 && Math.abs(found.y - centre.y) < 0.04,
+    `should land on the ball, not a speck (got ${found.x.toFixed(3)},${found.y.toFixed(3)})`);
+});
+
+test('a streak is allowed along the ball’s travel but not across it', () => {
+  // Motion blur smears a fast ball ALONG its flight and nowhere else, so the
+  // same streak is a blurred ball when it lies the way the ball is going, and
+  // an arm edge or a table line when it lies across it.
+  const w = 240, h = 180, cx = 0.5 * w, cy = 0.6 * h;
+  const streak = blockAt(cx - 3, cy - 1, 7, 3);      // 7 wide, 3 tall
+
+  const along = make(); along.setBallColor('white');
+  const movingAcross = { x: 0.44, y: 0.6, vx: 2.0, vy: 0, t: 16, hits: 5, misses: 0, confirmed: true, conf: 0.8 };
+  assert.ok(detectPixels(along, w, h, streak, movingAcross),
+    'a streak along the direction of travel is a blurred ball');
+
+  const across = make(); across.setBallColor('white');
+  const movingDown = { x: 0.5, y: 0.5, vx: 0, vy: 3.0, t: 16, hits: 5, misses: 0, confirmed: true, conf: 0.8 };
+  assert.equal(detectPixels(across, w, h, streak, movingDown), null,
+    'the same streak across the direction of travel cannot be motion blur');
+});
+
+test('a bright distractor does not steal a confirmed track from the ball', () => {
+  const v = make();
+  v.setBallColor('white');
+  const w = 240, h = 180;
+  v.prev = null; v.bg = null; v.track = null;
+  v._findBall(pixelFrame(w, h, []), w, h, 0);
+  v._findBall(pixelFrame(w, h, []), w, h, 16);
+
+  let t = 32, onBall = 0, confirmedFrames = 0;
+  for (let i = 0; i < 20; i++) {
+    const nx = 0.36 + 0.013 * i, ny = 0.58 + 0.004 * i;
+    const pixels = blockAt(nx * w - 1, ny * h - 1, 3, 3);
+    // From frame 8, a rival blob of the same colour sits just off the path.
+    if (i >= 8) pixels.push(...blockAt((nx + 0.05) * w, (ny - 0.04) * h, 3, 3));
+    v._updateTrack(v._findBall(pixelFrame(w, h, pixels), w, h, t), t);
+    if (v.track && v.track.confirmed) {
+      confirmedFrames++;
+      if (Math.hypot(v.track.x - nx, v.track.y - ny) < 0.03) onBall++;
+    }
+    t += 16;
+  }
+  assert.ok(confirmedFrames >= 12, `should hold a lock through the rally (held ${confirmedFrames}/20)`);
+  assert.equal(onBall, confirmedFrames, 'every confirmed frame should sit on the real ball');
+});

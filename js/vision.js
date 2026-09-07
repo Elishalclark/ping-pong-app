@@ -32,6 +32,22 @@ const REACQUIRE_MS = 120;     // after this long coasting, a far blob re-acquire
 const BOUNCE_VY = 0.35;       // filtered vertical speed either side of a bounce
 const MIN_BALL_SPEED = 0.5;   // frame-widths/second — the ball moves; a drifting arm barely does
 const BALLISTIC_MIN = 0.3;    // how smooth the recent path must be to count as physical motion
+// A blob smaller than this has no measurable shape and cannot be told from
+// sensor noise, whatever else it scores. Safe because the processing
+// resolution is deliberately chosen (_sizeProcWidth) so the ball is about
+// 3.2 px across even at the FAR end of the table — a disc that size covers
+// roughly 8 pixels, so a real ball clears this floor with room to spare.
+const MIN_BALL_PIXELS = 4;
+// How much more elongated a blob may be when its long axis points exactly the
+// way the ball is travelling — i.e. how much motion blur is forgiven.
+const BLUR_ELONG_FACTOR = 2.0;
+// ... and how round it must be across that direction, where blur cannot
+// explain any stretching at all.
+const ROUND_ELONG = 1.8;
+// Below this speed (processing pixels/second) the velocity estimate's
+// DIRECTION is too noisy to judge blur by, and a ball that slow isn't blurred
+// anyway, so the plain roundness bound is used instead.
+const BLUR_MIN_SPEED_PX = 60;
 
 export class VisionReferee {
   constructor(video, overlay) {
@@ -329,20 +345,51 @@ export class VisionReferee {
     // slip straight through the size test below.
     const blobs = connectedBlobs(mask, weight, d, w, x0, y0, x1, y1);
 
+    // Where is the ball predicted to be heading? A blob may only be stretched
+    // along that direction (see the elongation gate below).
+    let vAngle = null;
+    if (this.track) {
+      const vpx = this.track.vx * w, vpy = this.track.vy * h;
+      if (Math.hypot(vpx, vpy) > BLUR_MIN_SPEED_PX) vAngle = Math.atan2(vpy, vpx);
+    }
+
     let best = null;
     for (const c of blobs) {
-      if (c.n < 2) continue;
+      // A blob of two or three pixels has no shape to speak of, and a ball
+      // that small could not be measured or told apart from sensor noise
+      // anyway. Below this the tracker was scoring specks against the real
+      // ball on equal terms — see the scoring note further down.
+      if (c.n < MIN_BALL_PIXELS) continue;
       const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1;
-      // A ball is roughly round. A fast one smears into a short streak, but
-      // an arm or a shirt edge is far longer in one direction than the other.
-      // A fast ball is motion-blurred into a short streak, so allow a fair bit
-      // of elongation — only a long thin edge (an arm, a table line) is worse.
-      const elongation = Math.max(bw, bh) / Math.min(bw, bh);
-      if (elongation > 6) continue;
       const fill = c.n / (bw * bh);          // a blob, not a scattered edge
       if (fill < 0.25) continue;
 
       const cx = c.sx / c.sw, cy = c.sy / c.sw;
+
+      // "Only a round, ball-like thing is tracked." A ball IS round. The one
+      // honest exception is motion blur, which smears a fast ball into a short
+      // streak — but always ALONG the direction it is travelling. So elongation
+      // is allowed exactly to the extent that the blob's long axis lines up
+      // with where the ball is known to be going, and not otherwise. A table
+      // line, a shirt seam, a cable or an arm edge lies whichever way it lies,
+      // is not aligned with the ball's flight, and is turned away. While
+      // acquiring there is no flight to compare against, so a genuinely round
+      // blob is required — which is exactly the moment false locks happen.
+      const shape = blobShape(c);
+      let maxElong = this._elongMax ?? 2.8;
+      if (vAngle !== null) {
+        // cos of the angle between the two axes; squared so only a good
+        // alignment buys much slack. Axes are undirected, hence the abs.
+        // Misalignment TIGHTENS the bound rather than merely failing to loosen
+        // it: blur stretches the ball along its flight and nowhere else, so a
+        // blob stretched across the flight is not a blurred ball no matter how
+        // fast the ball is going — it is the arm that just hit it, or an edge
+        // behind it.
+        const align = Math.abs(Math.cos(shape.angle - vAngle));
+        maxElong = ROUND_ELONG + align * align * (maxElong * BLUR_ELONG_FACTOR - ROUND_ELONG);
+      }
+      if (!shape.measurable || shape.elong > maxElong) continue;
+
       // The size test: a ball at this spot on the table must measure about
       // this many pixels across. Anything appreciably bigger is a hand, a
       // sleeve or a shadow, whatever else it looks like.
@@ -351,16 +398,22 @@ export class VisionReferee {
       if (expect > 0) {
         const dim = Math.max(bw, bh);
         const sTol = this._sizeTol ?? 1;
-        if (dim > expect * 3.5 * sTol || dim < expect * 0.45 / sTol) continue;
+        // The upper bound is what strictness is really for — how much bigger
+        // than a ball a thing may be before it's an arm. The lower bound is
+        // barely loosened at all: something far SMALLER than a ball can be is
+        // noise at any strictness, and letting the dial widen that floor was
+        // what let single-pixel specks through at low strictness.
+        if (dim > expect * 3.5 * sTol) continue;
+        // The floor barely moves with the dial (a fourth root, not a full
+        // division): the ball's apparent size at this spot is geometry, not
+        // taste. The absolute floor of 2 px is what protects a genuinely
+        // distant ball, which really is only a couple of pixels across at the
+        // far end — the processing resolution is chosen to keep it so.
+        if (dim < Math.max(2, expect * 0.68 / Math.pow(sTol, 0.25))) continue;
         sizeFit = 1 / (1 + Math.abs(dim - expect) / expect);
       } else if (c.n > 90) {
         continue;                            // uncalibrated: fall back to a cap
       }
-
-      // Roundness is a soft preference, NOT a gate: a slow ball is round, but a
-      // fast one blurs into a streak and would be wrongly rejected by a hard
-      // roundness test. It only nudges the score.
-      const round = blobRoundness(c);
 
       const meanR = c.cr / c.n, meanG = c.cg / c.n, meanB = c.cb / c.n;
       // Colour is the decisive test: the blob must actually be the ball's
@@ -369,12 +422,30 @@ export class VisionReferee {
       const col = this.ballColorScore(meanR, meanG, meanB);
       if (!col.pass) continue;
 
-      let score = (c.sw / c.n) * (1 / (1 + c.n / 30)) * fill * sizeFit * col.score *
-                  (0.5 + 0.5 * round);
-      if (px >= 0) score *= 1 / (1 + Math.hypot(cx - px, cy - py) / 25);
+      // Scoring. There used to be a 1/(1 + n/30) "prefer the smaller blob"
+      // term here, left over from before the table geometry could say how big
+      // the ball must actually be. Once calibrated it double-counted size and
+      // pulled the wrong way: a 2-pixel speck scored 0.94 on it against 0.60
+      // for a real ball, and since a degenerate blob also fills its own
+      // bounding box perfectly (fill = 1.0), specks outscored the actual ball
+      // — measured at 22.4 vs 14.7 at equal brightness. That is why the marker
+      // chased every little thing. With a calibrated table, sizeFit IS the
+      // size prior and the crude term is gone; it survives only as the
+      // uncalibrated fallback, where there is nothing better to go on.
+      let score = (c.sw / c.n) * fill * sizeFit * col.score * (0.35 + 0.65 * shape.round);
+      if (expect <= 0) score *= 1 / (1 + c.n / 30);
+      if (px >= 0) {
+        // Persistence: a confirmed track should stay on its own ball rather
+        // than being stolen by whatever else is momentarily bright. Once the
+        // track is trusted its prediction is worth a lot, so the preference
+        // for the candidate where the ball is expected is sharp; a tentative
+        // track's prediction is not yet worth much, so it stays gentle.
+        const grip = this.track?.confirmed ? 9 : 25;
+        score *= 1 / (1 + Math.hypot(cx - px, cy - py) / grip);
+      }
       if (!best || score > best.score) {
         best = { x: cx / w, y: cy / h, score, n: c.n, colScore: col.score,
-                 round, color: { r: meanR, g: meanG, b: meanB } };
+                 round: shape.round, color: { r: meanR, g: meanG, b: meanB } };
       }
     }
     if (!best) return null;
@@ -785,6 +856,11 @@ export class VisionReferee {
     // for whether it's willing to track an arm.
     this._colorTol = 1.2 - 0.2 * k;                // 1.2 (loose) .. 1.0 (tight)
     this._sizeTol = 1 + 0.8 * (1 - k);             // 1.8 (loose) .. 1 (tight)
+    // How far from round a blob may be before it isn't ball-shaped. This is
+    // the aspect ratio of a *stationary* candidate; a blob moving along its
+    // own long axis is allowed BLUR_ELONG_FACTOR times this, because that is
+    // what motion blur actually looks like.
+    this._elongMax = 3.0 - 0.9 * k;                // 3.0 (loose) .. 2.1 (tight)
   }
 
   /** Sample the ball's colour from a patch of the current frame (tap the ball). */
@@ -1362,22 +1438,46 @@ function connectedBlobs(mask, weight, rgba, w, x0, y0, x1, y1) {
   return blobs;
 }
 
-/** Roundness of a blob from its pixel covariance: 1 for a disc, →0 as it
- *  stretches into a line. More robust than a bounding box, which a diagonal
- *  streak fools. */
-function blobRoundness(c) {
-  if (c.n < 4) return 0;
+/**
+ * The shape of a blob, from its pixel covariance rather than its bounding
+ * box — a box is fooled by a diagonal streak, which fills a perfectly square
+ * box while being nothing like round.
+ *
+ * Returns roundness (1 for a disc, →0 as it stretches into a line), the
+ * aspect ratio of the blob, and which way its long axis points. The axis
+ * direction is what makes it possible to allow motion blur without allowing
+ * every elongated thing in the room: a blurred ball is stretched ALONG its
+ * travel, an arm edge or a table line is stretched whichever way it happens
+ * to lie.
+ *
+ * `measurable` is false for a blob too small to have a shape at all. That is
+ * deliberately distinct from "measured as not round": a two-pixel speck has
+ * no orientation to check, and must be judged on size instead of being
+ * quietly handed the benefit of the doubt.
+ */
+function blobShape(c) {
+  const none = { round: 0, elong: Infinity, angle: 0, measurable: false };
+  if (c.n < 4) return none;
   const mx = c.mx / c.n, my = c.my / c.n;
   const vxx = c.mxx / c.n - mx * mx;
   const vyy = c.myy / c.n - my * my;
   const vxy = c.mxy / c.n - mx * my;
   const tr = vxx + vyy;
   const det = vxx * vyy - vxy * vxy;
-  const disc = Math.max(0, tr * tr / 4 - det);
-  const l1 = tr / 2 + Math.sqrt(disc);
-  const l2 = tr / 2 - Math.sqrt(disc);
-  if (l1 <= 1e-6) return 0;
-  return Math.max(0, l2 / l1);   // 1 = perfectly round, 0 = a line
+  const root = Math.sqrt(Math.max(0, tr * tr / 4 - det));
+  const l1 = tr / 2 + root;          // variance along the major axis
+  const l2 = tr / 2 - root;          // ... and the minor
+  if (l1 <= 1e-6) return none;
+  const round = Math.max(0, l2 / l1);
+  // Axis *lengths* go as the square root of the variances, so the blob's
+  // aspect ratio is the square root of the eigenvalue ratio, not the ratio.
+  const elong = Math.sqrt(1 / Math.max(round, 1e-6));
+  // Eigenvector for l1: (vxy, l1 - vxx) satisfies M·e = l1·e. When vxy is ~0
+  // the matrix is already diagonal and the axis is simply x or y.
+  const angle = Math.abs(vxy) < 1e-9
+    ? (vxx >= vyy ? 0 : Math.PI / 2)
+    : Math.atan2(l1 - vxx, vxy);
+  return { round, elong, angle, measurable: true };
 }
 
 /** Count set pixels in a mask. */

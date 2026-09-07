@@ -92,7 +92,7 @@ Tune under *Detection settings* if calls are being missed or invented:
 | --- | --- | --- |
 | Bounce sensitivity | Room noise is triggering phantom bounces | Real bounces are being missed |
 | Noise gate | There's constant background hum | Quiet bounces aren't registering |
-| Tracking strictness | The marker wanders onto arms/shirts | The ball isn't being tracked at all (default is now 20%, leaning toward tracking) |
+| Tracking strictness | The marker wanders onto arms/shirts | The ball isn't being tracked at all (default is 20%, leaning toward tracking) |
 | Ball motion threshold | Shirts and arms are stealing the track | The ball is lost mid-rally |
 | Audio/video sync window | Sounds aren't being matched to the ball | Sounds are matched to the wrong moment |
 
@@ -167,6 +167,24 @@ The two sensors answer different questions, and neither is trusted alone.
   the moment it confirms and matches that specific colour from then on, tighter
   than the white/orange preset and adapted to the exact ball and lighting,
   reverting to the preset the instant the ball is lost.
+- **Only a round, ball-like blob is tracked — and blur is the one exception.**
+  Roundness cannot simply be demanded, because a fast ball smears into a
+  streak. But it smears *along the direction it is travelling* and nowhere
+  else, so elongation is allowed exactly to the extent that the blob's long
+  axis lines up with where the ball is known to be going. Stretched across the
+  flight, it cannot be motion blur — it is the arm that just hit the ball, a
+  table line, or a shirt seam — and it is turned away. While the tracker is
+  still acquiring there is no flight to compare against, so a genuinely round
+  blob is required, which is exactly the moment false locks used to happen.
+- **A speck is not a ball.** Blobs below a few pixels are rejected outright:
+  they have no measurable shape and cannot be told from sensor noise. This
+  matters more than it sounds, because the scoring used to *reward* being
+  small — a leftover size prior from before the table geometry could say how
+  big the ball must actually be. Combined with the fact that a degenerate blob
+  trivially fills its own bounding box, a two-pixel speck outscored the real
+  ball (22.4 against 14.7 at equal brightness), which is why the marker chased
+  every glint and flicker on the table. With a calibrated table the geometry
+  is the size prior, and the crude term is gone.
 - **Physical motion — the ball flies, arms don't.** A struck ball moves fast
   and traces a smooth arc (constant horizontal speed, gravity pulling it down);
   a waving arm drifts slowly and a shadow jitters. A track confirms as the ball

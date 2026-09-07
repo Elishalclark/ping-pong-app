@@ -252,3 +252,20 @@ input[type=range]{width:100%;height:34px;accent-color:var(--a)}
   padding:20px;text-align:center;display:flex;flex-direction:column;gap:10px;align-items:center}
 .overlay-title{font-size:18px;font-weight:700;line-height:1.3}
 #scanOverlay .overlay-card{margin-top:auto}
+
+/* --- digital table: a true top-down view, alongside the camera feed --- */
+.topdown-wrap{position:relative;margin-top:10px;border:1px solid var(--line);
+  border-radius:10px;background:#0f151d;overflow:hidden;
+  aspect-ratio:16/9;max-height:34vh}
+.topdown-wrap canvas{position:absolute;inset:0;width:100%;height:100%}
+.topdown-label{position:absolute;top:8px;left:10px;z-index:2;font-size:11px;
+  color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+
+@media (orientation:landscape) and (max-height:560px){
+  .topdown-wrap{margin-top:6px;max-height:none;flex:0 0 30%}
+  .stage{display:flex;flex-direction:column}
+}
+@media (min-width:900px) and (min-height:561px){
+  .topdown-wrap{max-height:28vh}
+  .stage{display:flex;flex-direction:column}
+}

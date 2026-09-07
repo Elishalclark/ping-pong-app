@@ -11,10 +11,11 @@ const els = {
   faultsA: $('faultsA'), faultsB: $('faultsB'),
   teamA: $('teamA'), teamB: $('teamB'), call: $('callBanner'),
   callText: $('callText'), callScore: $('callScore'), log: $('log'),
-  level: $('levelBar'), flux: $('fluxBar'),
+  level: $('levelBar'), flux: $('fluxBar'), topdownWrap: $('topdownWrap'),
 };
 
 const vision = new VisionReferee(els.video, els.overlay);
+vision.setTopDownCanvas($('topdownCanvas'));
 const audio = new AudioReferee();
 let referee = null;
 let started = false;
@@ -60,6 +61,7 @@ function finishCalibration() {
   calibrating = false;
   els.hint.hidden = true;
   els.overlay.classList.remove('calibrating');
+  els.topdownWrap.hidden = false;
   $('btnRef').disabled = false;
   say('Table set. Tap <b>Begin</b> when the players are ready.', 'info');
   log('table box placed', 'info', 1);

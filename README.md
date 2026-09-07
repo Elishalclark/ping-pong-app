@@ -228,6 +228,28 @@ The two sensors answer different questions, and neither is trusted alone.
   cameras or microphones, driven entirely by those physical events. It's the
   part that's fully covered by tests (`npm test`).
 
+## Seeing where the ball is going
+
+Two views sit on top of the tracking, both driven by the same locked-on
+track and the calibrated table geometry — neither is a separate guess.
+
+- **A predicted path on the camera view.** Once the ball is locked on and
+  moving, a short fading line is drawn ahead of it along its current
+  velocity — where the filter expects it to be over the next couple of
+  hundred milliseconds if nothing changes. It disappears the instant the
+  ball is lost or slows, rather than extrapolating a stale flight.
+- **A digital table, seen from directly above.** The camera view is a
+  trapezoid — the far end of the table is smaller than the near end — which
+  makes it hard to judge at a glance whether a ball landed in or out on the
+  far half. Calibrating the table also computes a homography (the same
+  four-point perspective transform used to unwarp a scanned document) that
+  maps any point in the camera image onto a true top-down rectangle. The
+  panel below the camera feed draws that rectangle with the net line and
+  A/B labels, and — once the tracker is locked on — the ball's real
+  position and short predicted path in it, undistorted by the camera's
+  angle. It appears the moment calibration finishes and stays in sync with
+  whatever the tracker is doing; there is nothing to turn on separately.
+
 ## Faults and rally points are not the same thing
 
 A service error and a rally lost in play both cost the point, but an umpire

@@ -13,6 +13,7 @@
 // into the size the ball must appear there — which is a far better test than
 // any fixed pixel threshold.
 const TABLE_WIDTH_M = 1.525;
+const TABLE_LENGTH_M = 2.74;
 const BALL_M = 0.04;
 
 // Alpha-beta (constant-velocity) tracking filter. Alpha corrects position
@@ -48,6 +49,7 @@ export class VisionReferee {
     this.motionThreshold = 22;
     this.showDebug = true;
     this.fps = 0;
+    this.topDownCtx = null;         // set via setTopDownCanvas()
     this.facing = 'environment';
     this.tracking = false;      // only hunt for the ball during an active match
     // The ball's colour is the one property almost unique to it: a regulation
@@ -641,35 +643,6 @@ export class VisionReferee {
    */
   setTable(corners) {
     const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-
-/**
- * RMS residual of a least-squares quadratic fit y = a + b·t + c·t². Small when
- * the samples lie on a smooth constant-acceleration curve (a flying ball),
- * large when they jitter. Solves the 3×3 normal equations by Cramer's rule.
- */
-function quadFitResidual(ts, ys) {
-  const n = ts.length;
-  let S0 = n, S1 = 0, S2 = 0, S3 = 0, S4 = 0, T0 = 0, T1 = 0, T2 = 0;
-  for (let i = 0; i < n; i++) {
-    const t = ts[i], y = ys[i], t2 = t * t;
-    S1 += t; S2 += t2; S3 += t2 * t; S4 += t2 * t2;
-    T0 += y; T1 += t * y; T2 += t2 * y;
-  }
-  const det = (a, b, c, d, e, f, g, h, i) =>
-    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-  const D = det(S0, S1, S2, S1, S2, S3, S2, S3, S4);
-  if (Math.abs(D) < 1e-12) return 0;
-  const a = det(T0, S1, S2, T1, S2, S3, T2, S3, S4) / D;
-  const b = det(S0, T0, S2, S1, T1, S3, S2, T2, S4) / D;
-  const c = det(S0, S1, T0, S1, S2, T1, S2, S3, T2) / D;
-  let sse = 0;
-  for (let i = 0; i < n; i++) {
-    const pred = a + b * ts[i] + c * ts[i] * ts[i];
-    sse += (ys[i] - pred) ** 2;
-  }
-  return Math.sqrt(sse / n);
-}
     const net = [mid(corners[1], corners[2]), mid(corners[0], corners[3])];
     const centre = corners.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
     const halfA = [corners[0], corners[1], net[0], net[1]];
@@ -678,6 +651,16 @@ function quadFitResidual(ts, ys) {
     // their apparent length is the perspective foreshortening of the view.
     const nearMid = mid(corners[0], corners[3]);
     const farMid = mid(corners[1], corners[2]);
+    // A homography turns the calibrated quad — foreshortened by whatever
+    // angle the phone happens to sit at — into a true top-down rectangle:
+    // c0 (A, near) and c3 (B, near) sit on the near edge, c1/c2 on the far
+    // edge, matching the table's real proportions (length along x, width
+    // along y) rather than the camera's. This is what the digital table view
+    // and any "where is the ball really, on the table" question use.
+    const homography = computeHomography(corners, [
+      { x: 0, y: 1 }, { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 },
+    ]);
+
     this.table = {
       corners: corners.map(c => ({ ...c })),
       net, centre, halfA, halfB,
@@ -686,9 +669,49 @@ function quadFitResidual(ts, ys) {
       nearEnd: [corners[0], corners[3]],
       farEnd: [corners[1], corners[2]],
       nearMid, farMid,
+      homography,
     };
     this._sizeProcWidth();
     return this.table;
+  }
+
+  /**
+   * Where a point in the camera picture really is on the table, as a flat
+   * top-down position — x 0..1 along the table's length (A to B), y 0..1
+   * across its width. Undoes the camera's perspective entirely: unlike the
+   * picture, equal distances on the table are equal distances here,
+   * regardless of how close to or far from the camera they are.
+   */
+  topDownPoint(p) {
+    if (!this.table?.homography) return null;
+    return applyHomography(this.table.homography, p.x, p.y);
+  }
+
+  /** The table's real length-to-width ratio, for drawing the top-down view
+   *  at the correct proportions rather than as a distorted square. */
+  static get TOP_DOWN_ASPECT() { return TABLE_WIDTH_M / TABLE_LENGTH_M; }
+
+  /**
+   * A short predicted path ahead of the ball's current position, in image
+   * space, from its current filtered velocity — a straight, constant-speed
+   * projection, not a full physics simulation. That is a deliberate choice:
+   * a real trajectory curves with gravity and breaks entirely at the next
+   * bounce or paddle contact, so extrapolating far or curving it would show
+   * false confidence. This is "where it's headed in the next instant," not
+   * a forecast of the rest of the rally, and it fades out for exactly that
+   * reason. Returns null when there's nothing trustworthy to predict from.
+   */
+  predictedPath(aheadMs = 220, steps = 5) {
+    if (!this.isLocked) return null;
+    const t = this.track;
+    const speed = Math.hypot(t.vx, t.vy);
+    if (speed < 0.15) return null;   // too slow for a direction to mean anything
+    const pts = [];
+    for (let i = 1; i <= steps; i++) {
+      const dt = (aheadMs * i) / steps / 1000;
+      pts.push({ x: t.x + t.vx * dt, y: t.y + t.vy * dt, f: i / steps });
+    }
+    return pts;
   }
 
   /**
@@ -1066,9 +1089,16 @@ function quadFitResidual(ts, ys) {
     return dmin / len;
   }
 
+  /** Give the tracker a canvas to render the top-down table view into. */
+  setTopDownCanvas(canvas) {
+    this.topDownCanvas = canvas;
+    this.topDownCtx = canvas.getContext('2d');
+  }
+
   _draw() {
     const ctx = this.octx, W = this.overlay.width, H = this.overlay.height;
     ctx.clearRect(0, 0, W, H);
+    this._drawTopDown();
 
     if (this.table) {
       // The out-of-bounds line, drawn first so the table sits on top of it.
@@ -1126,8 +1156,125 @@ function quadFitResidual(ts, ys) {
       recent.forEach((p, i) => (i ? ctx.lineTo(p.x * W, p.y * H) : ctx.moveTo(p.x * W, p.y * H)));
       ctx.stroke();
     }
+
+    // Where it's headed, not just where it's been: a short predicted path
+    // drawn ahead of the ball, fading out with distance so it reads as a
+    // brief projection rather than a promise about the rest of the rally.
+    const ahead = this.predictedPath();
+    if (ahead) {
+      ctx.lineWidth = 2;
+      let prev = this.track;
+      for (const p of ahead) {
+        ctx.strokeStyle = `rgba(120,220,255,${(0.6 * (1 - p.f)).toFixed(2)})`;
+        ctx.beginPath();
+        ctx.moveTo(prev.x * W, prev.y * H);
+        ctx.lineTo(p.x * W, p.y * H);
+        ctx.stroke();
+        prev = p;
+      }
+      const tip = ahead[ahead.length - 1];
+      ctx.fillStyle = 'rgba(120,220,255,.5)';
+      ctx.beginPath(); ctx.arc(tip.x * W, tip.y * H, 4, 0, Math.PI * 2); ctx.fill();
+    }
+
     ctx.strokeStyle = '#ffdc50'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(this.track.x * W, this.track.y * H, 10, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  /**
+   * The digital table: a true top-down diagram, drawn from the homography
+   * rather than from the picture. The camera's own view is a trapezoid —
+   * the far end always looks smaller and a ball near it looks closer to the
+   * net than it really is. This corrects that entirely: on this view, equal
+   * distances on the real table are equal distances on screen, which is
+   * what makes it worth having alongside the camera feed rather than
+   * instead of it.
+   */
+  _drawTopDown() {
+    const ctx = this.topDownCtx;
+    if (!ctx) return;
+    const canvas = this.topDownCanvas;
+    const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+    if (!cssW || !cssH) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== cssW * dpr || canvas.height !== cssH * dpr) {
+      canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+    }
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    if (!this.table) return;
+
+    // Fit the table rectangle (real proportions, from TOP_DOWN_ASPECT) inside
+    // the canvas with a margin, independent of the canvas's own aspect ratio.
+    const aspect = VisionReferee.TOP_DOWN_ASPECT;   // height / width, table is wider than tall
+    const pad = Math.min(W, H) * 0.08;
+    let tw = W - pad * 2, th = tw * aspect;
+    if (th > H - pad * 2) { th = H - pad * 2; tw = th / aspect; }
+    const ox = (W - tw) / 2, oy = (H - th) / 2;
+    const toCanvas = p => ({ x: ox + p.x * tw, y: oy + p.y * th });
+
+    // The out-of-bounds margin, drawn the same way as on the camera view.
+    const m = this.outMargin;
+    ctx.strokeStyle = 'rgba(248,81,73,.6)'; ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.strokeRect(ox - tw * m, oy - th * m, tw * (1 + 2 * m), th * (1 + 2 * m));
+    ctx.setLineDash([]);
+
+    // The table itself.
+    ctx.fillStyle = '#123a5e';
+    ctx.fillRect(ox, oy, tw, th);
+    ctx.strokeStyle = 'rgba(74,163,255,.9)'; ctx.lineWidth = 2;
+    ctx.strokeRect(ox, oy, tw, th);
+
+    // The net, running across the middle — table-space x = 0.5 by construction.
+    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.moveTo(ox + tw / 2, oy); ctx.lineTo(ox + tw / 2, oy + th); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const labelSize = Math.max(14, tw * 0.07);
+    ctx.font = `700 ${labelSize}px system-ui, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#4aa3ff'; ctx.fillText('A', ox + tw * 0.22, oy + th / 2);
+    ctx.fillStyle = '#ff8a4a'; ctx.fillText('B', ox + tw * 0.78, oy + th / 2);
+    ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+
+    if (!this.isLocked) return;
+
+    // The ball's true position on the table, and where it's headed — the
+    // whole reason this view exists. Off the table entirely (outByFraction)
+    // is drawn past the rectangle's edge rather than clamped onto it, so an
+    // out ball visibly leaves the table here too.
+    const tdBall = this.topDownPoint(this.track);
+    if (!tdBall) return;
+
+    const trail = this.trail.filter(p => this.track.t - p.t < 400).map(p => this.topDownPoint(p)).filter(Boolean);
+    if (trail.length > 1) {
+      ctx.strokeStyle = 'rgba(255,220,80,.5)'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      trail.forEach((p, i) => { const c = toCanvas(p); i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y); });
+      ctx.stroke();
+    }
+
+    const ahead = this.predictedPath();
+    if (ahead) {
+      let prev = tdBall;
+      for (const p of ahead) {
+        const tp = this.topDownPoint(p);
+        if (!tp) break;
+        const a = toCanvas(prev), b = toCanvas(tp);
+        ctx.strokeStyle = `rgba(120,220,255,${(0.6 * (1 - p.f)).toFixed(2)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        prev = tp;
+      }
+    }
+
+    const bc = toCanvas(tdBall);
+    ctx.fillStyle = '#ffdc50'; ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(bc.x, bc.y, Math.max(4, tw * 0.018), 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
   }
 
   /** A big letter on a chip, centred in one half of the table. */
@@ -1363,6 +1510,52 @@ function roundRect(ctx, x, y, w, h, r) {
 /** Scale a polygon outward from a point. */
 function expand(pts, centre, k) {
   return pts.map(p => ({ x: centre.x + (p.x - centre.x) * k, y: centre.y + (p.y - centre.y) * k }));
+}
+
+/**
+ * Perspective transform (homography) mapping four source points to four
+ * destination points, via the standard direct linear transform: eight point
+ * coordinates give eight linear equations in the eight unknowns of a 3x3
+ * matrix with h33 fixed at 1, solved by Gaussian elimination. This is what
+ * turns the calibrated table — a quadrilateral, foreshortened by the
+ * camera's angle — into a true top-down rectangle: every point on the table
+ * has one consistent flat position, not one that depends on the camera's
+ * viewpoint.
+ */
+function computeHomography(src, dst) {
+  const A = [];
+  const b = [];
+  for (let i = 0; i < 4; i++) {
+    const { x: sx, y: sy } = src[i], { x: dx, y: dy } = dst[i];
+    A.push([sx, sy, 1, 0, 0, 0, -sx * dx, -sy * dx]); b.push(dx);
+    A.push([0, 0, 0, sx, sy, 1, -sx * dy, -sy * dy]); b.push(dy);
+  }
+  const h = solveLinear(A, b);
+  return h && [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+}
+
+/** Solve an 8x8 linear system by Gaussian elimination with partial pivoting. */
+function solveLinear(A, b) {
+  const n = A.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[pivot][col])) pivot = r;
+    if (Math.abs(M[pivot][col]) < 1e-10) return null;   // degenerate — corners too nearly collinear
+    [M[col], M[pivot]] = [M[pivot], M[col]];
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = M[r][col] / M[col][col];
+      for (let c = col; c <= n; c++) M[r][c] -= f * M[col][c];
+    }
+  }
+  return M.map((row, i) => row[n] / row[i]);
+}
+
+/** Apply a homography to one point. */
+function applyHomography(H, x, y) {
+  const w = H[6] * x + H[7] * y + H[8];
+  return { x: (H[0] * x + H[1] * y + H[2]) / w, y: (H[3] * x + H[4] * y + H[5]) / w };
 }
 
 const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });

@@ -202,9 +202,14 @@
 
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<!-- Bundled locally rather than loaded from a CDN: a phone on a school/
+     corporate/carrier network with a content blocker, or a browser privacy
+     mode, can silently block a third-party script tag — which would break
+     two-phone pairing completely with no visible error. Vendoring removes
+     that whole class of failure. See js/vendor/README.md. -->
+<script src="js/vendor/pako.min.js"></script>
+<script src="js/vendor/qrcode.min.js"></script>
+<script src="js/vendor/jsQR.min.js"></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

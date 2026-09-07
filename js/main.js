@@ -687,11 +687,17 @@ function setPeerStatus(connected) {
 function drawQR(box, text) {
   box.hidden = false;
   box.innerHTML = '';
-  // qrcode-generator picks the smallest version that fits; error level L for capacity.
-  const qr = qrcode(0, 'L');
+  // This QR is read off another phone's SCREEN, not printed paper — glare,
+  // screen reflections and a slight angle are the normal case, not the
+  // exception. Error level 'M' (up to 15% of the code can be unreadable and
+  // it still decodes) trades a bit of size for a lot of real-world
+  // reliability over 'L'; a larger module size renders more source pixels
+  // per square, which holds up better once a camera photographs a photo of
+  // a screen rather than getting downscaled into mush.
+  const qr = qrcode(0, 'M');
   qr.addData(text);
   qr.make();
-  box.innerHTML = qr.createImgTag(4, 8);
+  box.innerHTML = qr.createImgTag(6, 10);
 }
 
 /**
@@ -740,6 +746,7 @@ async function scanQRInApp(title, hint) {
 function newLink() {
   link = new PeerLink();
   link.onOpen = () => {
+    clearConnectWatch();
     setPeerStatus(true);
     $('qrBox').hidden = true;
     $('joinQrBox').hidden = true;
@@ -756,8 +763,41 @@ function newLink() {
       syncSay('<b>Connected.</b> The host phone makes the automatic calls; this phone mirrors the score. Point A / Point B / Let / Fault / Undo here still act on the shared game.');
     }
   };
-  link.onClose = () => { setPeerStatus(false); syncSay('Disconnected. Re-pair to reconnect.'); };
+  link.onClose = () => {
+    clearConnectWatch();
+    setPeerStatus(false);
+    syncSay('Disconnected. Re-pair to reconnect.');
+  };
   link.onMessage = onPeerMessage;
+}
+
+/**
+ * The handshake can complete (codes exchanged) while the actual network
+ * connection never comes up — most often because the two phones are on
+ * different networks (cellular data especially) and there's no path between
+ * them a relay didn't get to in time. Left alone this fails completely
+ * silently: the last thing said is "Pairing… hold still." forever. This
+ * gives it a voice: a reassuring update partway through (a relayed
+ * connection legitimately takes longer than two phones on the same Wi-Fi),
+ * and a clear, actionable failure if it never comes up at all.
+ */
+let _connectTimers = [];
+function armConnectWatch(say = syncSay, onGiveUp = () => showPanel(false)) {
+  clearConnectWatch();
+  _connectTimers.push(setTimeout(() => {
+    if (!peered) say('Still connecting… this can take longer when the phones are on different networks (one on Wi-Fi, one on cellular data). Keep both screens open.');
+  }, 9000));
+  _connectTimers.push(setTimeout(() => {
+    if (!peered) {
+      say('<b>Couldn’t connect.</b> The codes exchanged fine, but the phones never found a path to each other. Putting both phones on the <b>same Wi-Fi</b> is the most reliable fix — then try again.');
+      link?.close(); link = null;
+      onGiveUp();
+    }
+  }, 25000));
+}
+function clearConnectWatch() {
+  _connectTimers.forEach(clearTimeout);
+  _connectTimers = [];
 }
 
 // --- host: create a game, show the invite as a real link/QR ---------------
@@ -778,6 +818,7 @@ $('btnHost').addEventListener('click', async () => {
           'This is the code they were shown after tapping Join.');
         await link.acceptAnswer(answer);
         syncSay('Pairing… hold still.');
+        armConnectWatch();
       } catch (e) { if (e.message !== 'cancelled') syncSay('Scan failed: ' + e.message); }
     };
   } catch (e) { syncSay('Could not host: ' + e.message); }
@@ -829,6 +870,7 @@ async function runGuestFlow(offerCode, { panel } = {}) {
   const answer = await link.answerOffer(offerCode);
   drawQR(qrBox, answer);
   progress('<b>Show this code to the host phone.</b> On their screen they’ll tap <b>Scan their reply</b> and point their phone’s camera at this.');
+  armConnectWatch(progress, panel ? () => showPanel(false) : () => { $('joinTitle').textContent = 'Couldn’t connect'; });
 }
 
 /**
@@ -855,7 +897,8 @@ function checkJoinLink() {
       await runGuestFlow(code, { panel: false });
       $('joinTitle').textContent = 'Show this to the host';
     } catch (e) {
-      $('joinBody').textContent = `Couldn’t join: ${e.message}`;
+      window.__lastJoinError = e;
+      $('joinBody').textContent = `Couldn’t join: ${e?.message || e?.name || String(e)}`;
       $('btnJoinAccept').disabled = false;
     }
   };

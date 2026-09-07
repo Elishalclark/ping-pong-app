@@ -22,10 +22,25 @@ export class PeerLink {
   }
 
   _newPeer() {
-    // A public STUN server helps across networks; on the same Wi‑Fi the local
-    // (host) candidates alone are enough, so pairing still works offline.
+    // STUN alone finds each phone's public address, but that is not enough
+    // whenever either phone is behind a NAT that won't let an unsolicited
+    // packet through it — carrier-grade NAT on mobile data is exactly that,
+    // and it is the ordinary case, not an edge case: two personal phones are
+    // very often on two different networks (home Wi-Fi + cellular, or two
+    // different carriers). Without a relay, that combination fails silently:
+    // the handshake completes, then the connection just never opens. TURN
+    // servers relay the traffic when a direct path can't be found, which is
+    // what makes phone-to-phone actually work across networks. These are a
+    // free public test relay (openrelay.metered.ca) — fine for this app's
+    // one-connection-per-match traffic, not something to build a business on.
     this.pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:openrelay.metered.ca:80' },
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+      ],
     });
     this.pc.onconnectionstatechange = () => {
       const st = this.pc.connectionState;
@@ -54,8 +69,12 @@ export class PeerLink {
         }
       };
       this.pc.addEventListener('icegatheringstatechange', check);
-      // Safety net: some browsers never flip to 'complete'.
-      setTimeout(resolve, 2500);
+      // Safety net: some browsers never flip to 'complete'. A TURN relay
+      // candidate takes an extra round trip to allocate, so this is longer
+      // than plain STUN needs — cutting it off early is what silently drops
+      // the one candidate that would have let two phones on different
+      // networks actually connect.
+      setTimeout(resolve, 4500);
     });
   }
 

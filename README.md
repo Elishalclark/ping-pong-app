@@ -302,18 +302,42 @@ that's fixed now that it's an actual link.
 
 Pairing needs both phones to see each other's screens once each way — after
 that they can be repositioned anywhere on the same Wi-Fi, or even different
-networks (a public STUN server helps them find each other, though very
-restrictive networks can still block it). If the connection drops, re-pair
-from the same panel.
+networks. If the connection drops, re-pair from the same panel.
 
-I've verified the whole flow end to end — a host's QR decodes to a real,
-well-formed URL with the invite code in it; opening that URL shows the
-dedicated join screen and cleans the address bar; tapping Join starts the
-camera and produces a reply code; and the host accepting that reply brings
-both phones to a connected, score-sharing state. What I can't do from here is
-hold two physical phones and scan one's screen with the other's camera, so if
-anything about pointing a real phone at a real code feels off, tell me
-exactly what you see.
+**Two things that were fixed after not working in practice:**
+
+- **The three libraries pairing depends on (drawing a QR, reading one back,
+  and compressing the connection code) used to load from a CDN.** A phone
+  on a school, workplace, or carrier network with a content filter — or a
+  browser privacy mode, or an ad blocker — can silently block that kind of
+  third-party script. When it does, pairing doesn't degrade gracefully, it
+  just doesn't work, with no error to explain why. They're now bundled
+  directly into the app (`js/vendor/`) instead, which removes that failure
+  mode entirely. One of the three also turned out to have a real bug of its
+  own: its browser-compatibility wrapper only handled two of the three ways
+  a page can load a script, and silently did nothing on the third — the
+  exact way this app was loading it. Fixed in the vendored copy
+  (`js/vendor/README.md` has the details).
+- **Two personal phones are very often on two different networks** — one on
+  home Wi-Fi, one on cellular data, say — and without a relay server in the
+  middle, that combination frequently can't find a direct path to each
+  other at all: the handshake completes, the codes exchange fine, and the
+  connection just never opens, silently. A relay (TURN) server is now
+  included as a fallback for exactly that case, and a connection that
+  hasn't come up within a few seconds now says so on screen — with same-Wi-Fi
+  as the concrete thing to try — instead of leaving both phones stuck on
+  "Pairing… hold still." forever with nothing to go on.
+
+I've verified the complete flow end to end with the real vendored libraries
+doing real work, not a stand-in for them: a host's QR is decoded by a real
+camera-reading pass over the actual rendered image and comes back as a
+well-formed URL; opening that URL shows the dedicated join screen; tapping
+Join produces a reply code that a second real decode reads back correctly;
+and the host accepting that reply brings both phones to a connected,
+score-sharing state. What I still can't do from here is hold two physical
+phones and point one's camera at the other's screen — lighting, glare, and
+distance are real variables a simulation can't stand in for — so if anything
+about that specific moment still feels off, tell me exactly what you see.
 
 ## What it gets right, and what it won't
 

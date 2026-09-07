@@ -90,6 +90,7 @@ Tune under *Detection settings* if calls are being missed or invented:
 | --- | --- | --- |
 | Bounce sensitivity | Room noise is triggering phantom bounces | Real bounces are being missed |
 | Noise gate | There's constant background hum | Quiet bounces aren't registering |
+| Tracking strictness | The marker wanders onto arms/shirts | The ball isn't being tracked at all |
 | Ball motion threshold | Shirts and arms are stealing the track | The ball is lost mid-rally |
 | Audio/video sync window | Sounds aren't being matched to the ball | Sounds are matched to the wrong moment |
 

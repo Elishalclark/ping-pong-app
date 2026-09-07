@@ -202,6 +202,34 @@ test('a ball-sized bright blob on the table is taken for the ball', () => {
     `found at ${found.x.toFixed(2)},${found.y.toFixed(2)}`);
 });
 
+test('a motion-blurred ball (a short streak) is still detected', () => {
+  // A fast ball smears into a streak; roundness must not be a hard gate or the
+  // ball is lost during exactly the fast play the app is for.
+  const v = make();
+  v.setBallColor('white');
+  const w = 200, h = 150, cx = 0.5 * w, cy = 0.55 * h;
+  const streak = (ww, hh) => {
+    const data = new Uint8ClampedArray(ww * hh * 4);
+    for (let i = 0; i < ww * hh; i++) { data[i*4]=60; data[i*4+1]=90; data[i*4+2]=70; data[i*4+3]=255; }
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -3; dx <= 3; dx++) {
+      const x = Math.round(cx + dx), y = Math.round(cy + dy);
+      const i = (y*ww + x)*4; data[i]=248; data[i+1]=248; data[i+2]=248;
+    }
+    return { data };
+  };
+  const plain = (ww, hh) => {
+    const data = new Uint8ClampedArray(ww * hh * 4);
+    for (let i = 0; i < ww * hh; i++) { data[i*4]=60; data[i*4+1]=90; data[i*4+2]=70; data[i*4+3]=255; }
+    return { data };
+  };
+  v.prev = null; v.bg = null; v.track = null;
+  v._findBall(plain(w, h), w, h, 0);
+  v._findBall(plain(w, h), w, h, 16);
+  const found = v._findBall(streak(w, h), w, h, 32);
+  assert.ok(found, 'a short streak (blurred ball) should still be found');
+  assert.ok(Math.abs(found.x - 0.5) < 0.05 && Math.abs(found.y - 0.55) < 0.05, 'at the streak');
+});
+
 test('an arm-sized blob is not taken for the ball', () => {
   const v = make();
   const w = 192, h = 144;

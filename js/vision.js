@@ -54,6 +54,12 @@ export class VisionReferee {
     // ball is white or orange, and nothing else on the table is. Selecting by
     // colour is what lets the tracker follow the ball and not arms or shirts.
     this.ballColor = 'white';   // 'white' | 'orange' | a sampled {r,g,b}
+    // One dial for how picky the tracker is, 0 (tracks readily, may wander) to
+    // 1 (only a textbook ball locks on). The right value depends on the room,
+    // the ball and the lighting, which only the user can see — so it is a
+    // slider, defaulted to lean toward tracking.
+    this.strictness = 0.35;
+    this._applyStrictness();
     this.ballTemplate = null;   // the ACTUAL ball's colour, learned once locked on
     this.onCameraLost = () => {};
     this.onCameraBack = () => {};
@@ -327,10 +333,12 @@ export class VisionReferee {
       const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1;
       // A ball is roughly round. A fast one smears into a short streak, but
       // an arm or a shirt edge is far longer in one direction than the other.
+      // A fast ball is motion-blurred into a short streak, so allow a fair bit
+      // of elongation — only a long thin edge (an arm, a table line) is worse.
       const elongation = Math.max(bw, bh) / Math.min(bw, bh);
-      if (elongation > 4) continue;
+      if (elongation > 6) continue;
       const fill = c.n / (bw * bh);          // a blob, not a scattered edge
-      if (fill < 0.3) continue;
+      if (fill < 0.25) continue;
 
       const cx = c.sx / c.sw, cy = c.sy / c.sw;
       // The size test: a ball at this spot on the table must measure about
@@ -346,10 +354,10 @@ export class VisionReferee {
         continue;                            // uncalibrated: fall back to a cap
       }
 
-      // True roundness: a ball is round in every direction. A diagonal streak
-      // or an arm edge that slipped past the bounding-box test fails here.
+      // Roundness is a soft preference, NOT a gate: a slow ball is round, but a
+      // fast one blurs into a streak and would be wrongly rejected by a hard
+      // roundness test. It only nudges the score.
       const round = blobRoundness(c);
-      if (round < 0.35) continue;
 
       const meanR = c.cr / c.n, meanG = c.cg / c.n, meanB = c.cb / c.n;
       // Colour is the decisive test: the blob must actually be the ball's
@@ -368,11 +376,11 @@ export class VisionReferee {
     }
     if (!best) return null;
 
-    // Acquiring a fresh lock demands a clearly ball-like blob: it is far worse
-    // to start tracking a white shirt than to wait a few frames for the ball.
-    // Once locked on, the bar is lower so motion blur doesn't drop the ball.
+    // Acquiring a fresh lock wants a decently on-colour blob (better to wait a
+    // frame than to start on a white shirt), but the bar is deliberately not
+    // so high that a blurred ball never qualifies. Tunable via strictness.
     const acquiring = !this.track || !this.track.confirmed;
-    if (acquiring && (best.round < 0.5 || best.colScore < 0.5)) return null;
+    if (acquiring && best.colScore < this._acqColorFloor) return null;
 
     return { ...best, t, conf: Math.min(1, best.score / 40) };
   }
@@ -446,7 +454,7 @@ export class VisionReferee {
     let vx = (m.x - prevReject.x) / dt;
     let vy = (m.y - prevReject.y) / dt;
     const speed = Math.hypot(vx, vy);
-    if (speed < MIN_BALL_SPEED) return false;      // too slow to be the ball
+    if (speed < this._minSpeed) return false;      // too slow to be the ball
     if (speed > V_MAX) { const k = V_MAX / speed; vx *= k; vy *= k; }
     this.track = { x: m.x, y: m.y, vx, vy, t, conf: (m.conf ?? 0.5) * 0.6,
                    hits: 2, misses: 0, confirmed: false };
@@ -465,7 +473,7 @@ export class VisionReferee {
    */
   _accept(m, t) {
     const p = this.track;
-    if (!p || p.hits < CONFIRM) return true;
+    if (!p || p.hits < this._confirm) return true;
     const dt = Math.max(1 / 125, (t - p.t) / 1000);
     const xp = p.x + p.vx * dt, yp = p.y + p.vy * dt;
     const r = Math.hypot(m.x - xp, m.y - yp);
@@ -531,9 +539,9 @@ export class VisionReferee {
     // jittery motion isn't smooth — neither should confirm as the ball.
     this._pushTrail(x, y, t, false);          // push first so the fit sees this point
     const ballistic = this._ballisticScore();
-    const fastEnough = speed >= MIN_BALL_SPEED;
+    const fastEnough = speed >= this._minSpeed;
     const confirmed = prev.confirmed ||
-      (hits >= CONFIRM && fastEnough && ballistic >= BALLISTIC_MIN);
+      (hits >= this._confirm && fastEnough && ballistic >= this._ballisticMin);
     // The frame a track first confirms, adopt the ball's own colour as the
     // template so later frames track this specific ball, not a generic preset.
     if (confirmed && !prev.confirmed && m.color) this.ballTemplate = { ...m.color };
@@ -727,6 +735,16 @@ function quadFitResidual(ts, ys) {
 
   /** Choose what the ball looks like: 'white', 'orange', or a sampled colour. */
   setBallColor(c) { this.ballColor = c; this.ballTemplate = null; }
+
+  /** 0 = track readily (may wander), 1 = only a clear ball locks on. */
+  setStrictness(v) { this.strictness = clamp(v, 0, 1); this._applyStrictness(); }
+  _applyStrictness() {
+    const k = this.strictness;
+    this._confirm = Math.round(2 + 3 * k);        // 2..5 coherent frames to trust
+    this._minSpeed = 0.12 + 0.7 * k;              // 0.12..0.82 frame-widths/s
+    this._ballisticMin = 0.05 + 0.45 * k;         // 0.05..0.5 path smoothness
+    this._acqColorFloor = 0.3 + 0.35 * k;         // 0.3..0.65 colour match to acquire
+  }
 
   /** Sample the ball's colour from a patch of the current frame (tap the ball). */
   sampleBallColorAt(nx, ny) {

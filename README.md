@@ -68,9 +68,13 @@ no browser bars, and works with no signal at all.
    anything else in the shot, and that's enough to find its four corners
    without being told where they are. There is no box to place by hand as a
    first step; a box appears already sitting on the table.
-4. **Check it, don't just trust it.** Automatic detection can be thrown off
-   by glare, clutter, or a table colour close to the floor's, so glance at the
-   box before tapping **Use this box**. If a corner is off, **drag it** onto
+4. **Check it, don't just trust it — the far corners especially.** Tested
+   against real rooms, not just studio shots: the near two corners are
+   reliably close, but a same-coloured wall or floor behind the table is what
+   most often pulls a far corner past the table's real edge, since colour
+   region-growing can't always tell "table" from "wall lit the same way" on
+   its own. So glance at the box before tapping **Use this box**, and expect
+   to nudge a far corner more often than a near one. **Drag** any corner onto
    the table's actual corner — a magnifier appears under your finger so you
    can place it precisely — or drag the middle of the box to slide the whole
    thing into position. **Swap ends** flips which end is Player A's; each

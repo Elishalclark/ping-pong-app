@@ -1122,9 +1122,13 @@ export class VisionReferee {
       }
     }
     if (!tl || size < W * H * 0.015) return null;
-    // A region spanning essentially the whole frame is the background (the
-    // floor or a wall filling the view), not a table sitting inside the frame.
-    if (minX < 0.03 * W && maxX > 0.97 * W && minY < 0.03 * H && maxY > 0.97 * H) return null;
+    // A region spanning essentially the whole frame on EITHER axis is the
+    // background (the floor or a wall filling the view), not a table sitting
+    // inside the frame — a real table, framed as the app asks, does not run
+    // edge-to-edge in a real shot.
+    const spansXfull = minX < 0.03 * W && maxX > 0.97 * W;
+    const spansYfull = minY < 0.03 * H && maxY > 0.97 * H;
+    if (spansXfull || spansYfull) return null;
 
     const norm = p => ({ x: p.x / W, y: p.y / H });
     const corners = [norm(bl), norm(tl), norm(tr), norm(br)];

@@ -104,7 +104,10 @@ function runScan(seed) {
   // The photo is the table with nobody playing on it, which is exactly the
   // reference the tracker wants for spotting the ball later.
   vision.captureBackground();
-  hint.innerHTML = 'Found the table. Check the box sits on it — drag a corner to fix it, <b>Swap ends</b> if A and B are reversed — then <b>Use this box</b>.';
+  // The near corners are reliably close; the far corners are where a same-
+  // coloured wall behind the table most often pulls the scan off the real
+  // edge, so that is what actually deserves a glance before trusting it.
+  hint.innerHTML = 'Found the table. Check the <b>far corners</b> especially — drag any that are off, <b>Swap ends</b> if A and B are reversed — then <b>Use this box</b>.';
   log(`table found${seed ? '' : ' automatically'} — ${Math.round(found.coverage * 100)}% of the view`, 'info', 1);
 }
 

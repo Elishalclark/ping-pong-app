@@ -389,6 +389,18 @@ test('scanning rejects a table-coloured background filling the frame', () => {
   assert.equal(v.scanTable(), null, 'a full-frame region is the background, not a table');
 });
 
+test('scanning rejects a region that spans edge-to-edge on just one axis', () => {
+  // A real failure mode found by running this against actual photos: a large
+  // same-coloured wall behind the table gets merged with it into one region
+  // that runs the full WIDTH of the frame (edge to edge) while stopping well
+  // short of the top and bottom — the old check only rejected a region that
+  // spanned BOTH axes, so this kind of one-axis wall bleed slipped through
+  // and was confidently reported as the table.
+  const v = withScene({ quad: [[0, 0.15], [0, 0.85], [1, 0.85], [1, 0.15]] });
+  assert.equal(v.scanTable(), null,
+    'a region running the full width of the frame is the background, not a table, even if it does not reach top and bottom');
+});
+
 test('scanning finds a table under a brightness gradient across it', () => {
   // Real tables are lit unevenly; the near edge is brighter than the far one.
   // The shading must not split the table into "two colours".

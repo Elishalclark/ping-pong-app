@@ -40,6 +40,11 @@ export class PeerLink {
         { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+        // TURN over TLS on 443: to a firewall this is indistinguishable from
+        // ordinary HTTPS traffic, so it is the one variant here most likely
+        // to get through a restrictive campus, workplace, or carrier network
+        // that a plain TURN/UDP or TURN/TCP relay cannot.
+        { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
       ],
     });
     this.pc.onconnectionstatechange = () => {
@@ -116,6 +121,41 @@ export class PeerLink {
     try { this.channel?.close(); } catch {}
     try { this.pc?.close(); } catch {}
     this.channel = this.pc = null;
+  }
+
+  /**
+   * A compact snapshot of what the connection actually managed, for
+   * diagnosing a failed pairing after the fact rather than guessing at it —
+   * "still not working" carries no information; this does. In particular it
+   * says outright whether a TURN relay was ever reached at all, which is the
+   * one fact that separates "the relay is unreachable from this network" from
+   * every other possible cause.
+   */
+  async diagnose() {
+    if (!this.pc) return { note: 'no connection was ever created' };
+    const stats = await this.pc.getStats().catch(() => null);
+    const local = [], remote = [];
+    let usedPair = null;
+    stats?.forEach(r => {
+      if (r.type === 'local-candidate') local.push(r.candidateType);
+      if (r.type === 'remote-candidate') remote.push(r.candidateType);
+      if (r.type === 'candidate-pair' && r.state === 'succeeded') usedPair = r;
+    });
+    let usedTypes = null;
+    if (usedPair && stats) {
+      const l = stats.get(usedPair.localCandidateId);
+      const r = stats.get(usedPair.remoteCandidateId);
+      usedTypes = { local: l?.candidateType, remote: r?.candidateType };
+    }
+    return {
+      connectionState: this.pc.connectionState,
+      iceConnectionState: this.pc.iceConnectionState,
+      iceGatheringState: this.pc.iceGatheringState,
+      localCandidateTypes: [...new Set(local)],
+      remoteCandidateTypes: [...new Set(remote)],
+      relayCandidateGathered: local.includes('relay'),
+      succeededPairTypes: usedTypes,
+    };
   }
 }
 

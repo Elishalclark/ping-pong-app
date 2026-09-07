@@ -322,11 +322,32 @@ networks. If the connection drops, re-pair from the same panel.
   home Wi-Fi, one on cellular data, say — and without a relay server in the
   middle, that combination frequently can't find a direct path to each
   other at all: the handshake completes, the codes exchange fine, and the
-  connection just never opens, silently. A relay (TURN) server is now
-  included as a fallback for exactly that case, and a connection that
-  hasn't come up within a few seconds now says so on screen — with same-Wi-Fi
-  as the concrete thing to try — instead of leaving both phones stuck on
-  "Pairing… hold still." forever with nothing to go on.
+  connection just never opens, silently. A relay (TURN) server is included
+  as a fallback for exactly that case, alongside a TLS variant of it on
+  port 443 specifically — to a restrictive network that one looks
+  identical to ordinary HTTPS traffic, which is the transport most likely
+  to get through where a plain relay connection gets blocked. A connection
+  that hasn't come up within a few seconds now says so on screen instead of
+  leaving both phones stuck on "Pairing… hold still." forever with nothing
+  to go on, and if it ultimately fails, `PeerLink.diagnose()` (also on
+  `window.umpire.link` in the browser console) reports the one fact that
+  actually narrows the cause down: whether a relay connection was reached
+  at all, which separates "this network is blocking the relay" from
+  everything else it could be.
+
+  Worth being straight about: the relay server is a shared, free public
+  one, not something with an uptime guarantee, and I have no way to reach
+  it — or the open internet at all — from the environment I develop in, so
+  I cannot personally confirm it answers from any particular real network.
+  If cross-network pairing still doesn't connect, the diagnostic above is
+  how to find out why with certainty rather than guessing again: open the
+  browser console on the phone that gave up and run
+  `window.umpire.link.diagnose()` (Safari: Settings → Safari → Advanced →
+  Web Inspector, then use a Mac to inspect the tab; Chrome: `chrome://inspect`
+  from a computer on the same network). `relayCandidateGathered: false`
+  means the relay was never reached — the fix then is either that network's
+  own restriction, or a different (possibly paid, dedicated) relay, which I
+  can wire in given credentials.
 
 I've verified the complete flow end to end with the real vendored libraries
 doing real work, not a stand-in for them: a host's QR is decoded by a real

@@ -787,12 +787,26 @@ function armConnectWatch(say = syncSay, onGiveUp = () => showPanel(false)) {
   _connectTimers.push(setTimeout(() => {
     if (!peered) say('Still connecting… this can take longer when the phones are on different networks (one on Wi-Fi, one on cellular data). Keep both screens open.');
   }, 9000));
-  _connectTimers.push(setTimeout(() => {
-    if (!peered) {
-      say('<b>Couldn’t connect.</b> The codes exchanged fine, but the phones never found a path to each other. Putting both phones on the <b>same Wi-Fi</b> is the most reliable fix — then try again.');
-      link?.close(); link = null;
-      onGiveUp();
-    }
+  _connectTimers.push(setTimeout(async () => {
+    if (peered) return;
+    // Capture what actually happened before tearing the connection down —
+    // in particular, whether a relay was ever reached at all. This is what
+    // turns the next report into something actionable instead of another
+    // round of "still not working": either the relay was reached and
+    // something else is wrong, or it never was, which points squarely at
+    // this network blocking it.
+    const diag = await link?.diagnose().catch(() => null);
+    window.__lastConnectDiagnosis = diag;
+    const relay = diag?.relayCandidateGathered;
+    const extra = diag
+      ? relay
+        ? ' (A relay connection was found on this end, so the other phone’s network is the more likely place to look.)'
+        : ' (This phone never reached a relay server at all — that points at this network blocking it, not just distance between the phones.)'
+      : '';
+    say(`<b>Couldn’t connect.</b> The codes exchanged fine, but the phones never found a path to each other. Putting both phones on the <b>same Wi-Fi</b> is the most reliable fix — then try again.${extra}`);
+    log(`connection diagnosis: ${JSON.stringify(diag)}`, 'info', 0);
+    link?.close(); link = null;
+    onGiveUp();
   }, 25000));
 }
 function clearConnectWatch() {

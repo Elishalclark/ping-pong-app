@@ -213,20 +213,20 @@ const clamp01 = v => Math.min(1, Math.max(0, v));
 // Start / stop
 // =========================================================================
 
-$('btnStart').addEventListener('click', async () => {
+/**
+ * Turn on the camera and mic and stand up the referee. Shared by the visible
+ * Start button and the join-landing overlay, which needs the same permission
+ * flow before it can answer the host's offer.
+ */
+async function doStart() {
   if (started) return;
   primeSpeech();
-  $('btnStart').disabled = true;
   say('Asking for the camera and microphone…', 'info');
 
-  try {
-    await vision.start();
-    els.cam.className = 'pill on';
-  } catch (err) {
-    els.cam.className = 'pill off';
-    $('btnStart').disabled = false;
-    return say(cameraHelp(err), 'fault');
-  }
+  await vision.start().then(
+    () => { els.cam.className = 'pill on'; },
+    err => { els.cam.className = 'pill off'; throw err; }
+  );
   try {
     await audio.start();
     els.mic.className = 'pill on';
@@ -272,6 +272,17 @@ $('btnStart').addEventListener('click', async () => {
     }
   }, 250);
   beginCalibration();
+}
+
+$('btnStart').addEventListener('click', async () => {
+  if (started) return;
+  $('btnStart').disabled = true;
+  try {
+    await doStart();
+  } catch (err) {
+    $('btnStart').disabled = false;
+    say(cameraHelp(err), 'fault');
+  }
 });
 
 function cameraHelp(err) {
@@ -616,13 +627,41 @@ window.umpire = { get vision() { return vision; }, get audio() { return audio; }
 // =========================================================================
 // One phone hosts (holds the authoritative game); the other joins and mirrors
 // it. Either phone's manual calls act on the one shared game, and both cameras
-// give their own angle. The pairing exchanges an offer/answer by QR — the host
-// shows a code, the guest scans and shows one back, the host scans that.
+// give their own angle.
+//
+// The two legs of the handshake are NOT symmetric, and treating them the same
+// is what broke this the first time:
+//
+//   Leg 1 — the guest reads the HOST's code. The guest has no app state yet,
+//   so this code is encoded as a real, clickable URL
+//   (`?join=<code>`). ANY camera app can read it — the phone's own Camera app
+//   included — because it is a normal link: it opens this page, which notices
+//   the `join` parameter on load and shows a dedicated full-screen "you've
+//   been invited" landing before anything else. Encoding it as bare data was
+//   the bug: a generic QR reader has nothing useful to do with a blob of
+//   base64 and, on many phones, offers to web-search it instead — which is
+//   the broken "Google page not found" the report described.
+//
+//   Leg 2 — the HOST reads the guest's reply code. This one is NOT a URL: the
+//   host's page must stay exactly where it is, because the pending
+//   RTCPeerConnection created for the offer lives only in that page's memory.
+//   Opening the reply as a link would load a fresh page with no memory of it.
+//   So this leg has to happen through this app's own camera view, and that
+//   view is now a full-screen scanner (#scanOverlay) so it is unmistakably a
+//   deliberate, dedicated screen — not a small panel easy to mistake for
+//   "just point your phone's camera at this like normal."
 
 let link = null;
 let isHost = false;
 let peered = false;
 let scanStop = null;
+
+function joinURL(offerCode) {
+  const u = new URL(location.href);
+  u.search = ''; u.hash = '';
+  u.searchParams.set('join', offerCode);
+  return u.toString();
+}
 
 function syncSay(html) { $('syncStep').innerHTML = html; }
 function showPanel(on) {
@@ -645,8 +684,7 @@ function setPeerStatus(connected) {
   pill.hidden = !connected;
 }
 
-function drawQR(text) {
-  const box = $('qrBox');
+function drawQR(box, text) {
   box.hidden = false;
   box.innerHTML = '';
   // qrcode-generator picks the smallest version that fits; error level L for capacity.
@@ -656,9 +694,16 @@ function drawQR(text) {
   box.innerHTML = qr.createImgTag(4, 8);
 }
 
-async function scanQR() {
-  const wrap = $('scanWrap'), video = $('scanVideo');
-  wrap.hidden = false;
+/**
+ * Read a QR through THIS page's own camera, full-screen, with a title
+ * explaining what is being scanned. Used only for leg 2 (the host reading the
+ * guest's reply) — the one step that must not navigate away.
+ */
+async function scanQRInApp(title, hint) {
+  const overlay = $('scanOverlay'), video = $('scanVideo');
+  $('scanOverlayTitle').textContent = title;
+  $('scanOverlayHint').textContent = hint || '';
+  overlay.hidden = false;
   const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
   video.srcObject = stream; await video.play();
   const canvas = document.createElement('canvas');
@@ -668,9 +713,10 @@ async function scanQR() {
     scanStop = () => {
       stopped = true;
       stream.getTracks().forEach(t => t.stop());
-      wrap.hidden = true; scanStop = null;
+      overlay.hidden = true; scanStop = null;
       reject(new Error('cancelled'));
     };
+    $('btnScanCancel').onclick = scanStop;
     const tick = () => {
       if (stopped) return;
       if (video.readyState >= 2) {
@@ -681,7 +727,7 @@ async function scanQR() {
         if (code && code.data) {
           stopped = true;
           stream.getTracks().forEach(t => t.stop());
-          wrap.hidden = true; scanStop = null;
+          overlay.hidden = true; scanStop = null;
           return resolve(code.data);
         }
       }
@@ -696,7 +742,8 @@ function newLink() {
   link.onOpen = () => {
     setPeerStatus(true);
     $('qrBox').hidden = true;
-    $('btnSyncNext').hidden = true;
+    $('joinQrBox').hidden = true;
+    $('btnSyncScan').hidden = true;
     if (isHost) {
       syncSay('<b>Connected.</b> This phone is the host — its camera and mic make the automatic calls. The score is shared to the other phone.');
       broadcastState();                          // send the guest the current score
@@ -713,19 +760,22 @@ function newLink() {
   link.onMessage = onPeerMessage;
 }
 
+// --- host: create a game, show the invite as a real link/QR ---------------
+
 $('btnHost').addEventListener('click', async () => {
   isHost = true; showPanel(true);
   syncSay('Creating a code…');
   try {
     newLink();
     const offer = await link.createOffer();
-    drawQR(offer);
-    syncSay('On the <b>other</b> phone tap <b>Join with a QR</b> and scan this. Then tap <b>Scan their reply</b>.');
-    const next = $('btnSyncNext');
-    next.hidden = false; next.textContent = 'Scan their reply';
-    next.onclick = async () => {
+    drawQR($('qrBox'), joinURL(offer));
+    syncSay('On the <b>other</b> phone, scan this with its <b>regular camera</b> — it opens a page that walks them through joining. When they show you a code back, tap <b>Scan their reply</b> below.');
+    const scanBtn = $('btnSyncScan');
+    scanBtn.hidden = false; scanBtn.textContent = 'Scan their reply';
+    scanBtn.onclick = async () => {
       try {
-        const answer = await scanQR();
+        const answer = await scanQRInApp('Point at the OTHER phone’s reply code',
+          'This is the code they were shown after tapping Join.');
         await link.acceptAnswer(answer);
         syncSay('Pairing… hold still.');
       } catch (e) { if (e.message !== 'cancelled') syncSay('Scan failed: ' + e.message); }
@@ -733,15 +783,15 @@ $('btnHost').addEventListener('click', async () => {
   } catch (e) { syncSay('Could not host: ' + e.message); }
 });
 
+// Fallback for someone already inside the app who'd rather scan than tap a
+// link — the same in-app scanner leg 1 would otherwise skip.
 $('btnJoin').addEventListener('click', async () => {
   isHost = false; showPanel(true);
-  syncSay('Point this phone at the <b>host phone’s QR</b>.');
+  syncSay('Point this phone at the <b>host phone’s code</b>.');
   try {
-    newLink();
-    const offer = await scanQR();
-    const answer = await link.answerOffer(offer);
-    drawQR(answer);
-    syncSay('Now on the <b>host</b> phone tap <b>Scan their reply</b> and scan THIS code.');
+    const raw = await scanQRInApp('Point at the HOST phone’s code', 'The code shown after they tap Host on this phone.');
+    const offer = extractJoinCode(raw);
+    await runGuestFlow(offer, { panel: true });
   } catch (e) { if (e.message !== 'cancelled') syncSay('Could not join: ' + e.message); }
 });
 
@@ -751,6 +801,72 @@ $('btnSyncCancel').addEventListener('click', () => {
   showPanel(false);
   setPeerStatus(false);
 });
+
+// --- guest: arriving via a scanned/tapped join link ------------------------
+
+/** Pull the offer code back out, whether we were handed a bare code or a full URL. */
+function extractJoinCode(text) {
+  try {
+    const u = new URL(text);
+    const code = u.searchParams.get('join');
+    if (code) return code;
+  } catch { /* not a URL — treat as a bare code */ }
+  return text;
+}
+
+/**
+ * Everything from tapping "Join" to producing the reply QR, shared by the
+ * URL-landing path and the in-app "I have a code" fallback.
+ */
+async function runGuestFlow(offerCode, { panel } = {}) {
+  isHost = false;
+  if (panel) showPanel(true);
+  const progress = panel ? m => syncSay(m) : m => { $('joinProgress').hidden = false; $('joinProgress').innerHTML = m; };
+  const qrBox = panel ? $('qrBox') : $('joinQrBox');
+
+  progress('Connecting…');
+  newLink();
+  const answer = await link.answerOffer(offerCode);
+  drawQR(qrBox, answer);
+  progress('<b>Show this code to the host phone.</b> On their screen they’ll tap <b>Scan their reply</b> and point their phone’s camera at this.');
+}
+
+/**
+ * The page loaded with `?join=<code>` in the address — someone's camera app
+ * (or this app's own scanner) read the host's QR and opened the link. This is
+ * the dedicated screen for that arrival: nothing else happens until the
+ * person taps Join.
+ */
+function checkJoinLink() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get('join');
+  if (!code) return;
+  // Strip the param immediately so refreshing this page doesn't re-show the
+  // invite or re-run the handshake against a now-stale offer.
+  history.replaceState({}, '', location.pathname);
+
+  $('joinOverlay').hidden = false;
+  $('btnJoinAccept').onclick = async () => {
+    $('btnJoinAccept').disabled = true;
+    $('joinBody').textContent = 'Asking for the camera and microphone…';
+    try {
+      if (!started) await doStart();          // reuse the normal Start flow
+      $('joinBody').textContent = '';
+      await runGuestFlow(code, { panel: false });
+      $('joinTitle').textContent = 'Show this to the host';
+    } catch (e) {
+      $('joinBody').textContent = `Couldn’t join: ${e.message}`;
+      $('btnJoinAccept').disabled = false;
+    }
+  };
+  $('btnJoinDecline').addEventListener('click', () => { $('joinOverlay').hidden = true; });
+
+  // Once the data channel opens, drop the landing overlay and go straight
+  // into the normal app so the guest can calibrate their end.
+  const check = setInterval(() => {
+    if (peered) { $('joinOverlay').hidden = true; clearInterval(check); }
+  }, 200);
+}
 
 // --- shared game state -------------------------------------------------
 
@@ -809,3 +925,4 @@ function applyAction(action, side) {
 
 render({ score: { A: 0, B: 0 }, games: { A: 0, B: 0 }, server: 'A' });
 checkOrientation();
+checkJoinLink();

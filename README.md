@@ -273,9 +273,14 @@ stroke.
 You can pair a second phone so each player's end has its own camera angle,
 with one shared score between them. Under **Setup → Second phone**:
 
-- On one phone, tap **Host on this phone**. It shows a QR code.
-- On the other, tap **Join with a QR** and scan it. It shows a code back.
-- Back on the host, tap **Scan their reply** and scan that second code.
+1. On one phone, tap **Host on this phone**. It shows a QR code.
+2. On the **other** phone, scan that code with its **ordinary camera app** —
+   no need to open the umpire app first. It's a real link: scanning it opens
+   this page and lands on a dedicated "you've been invited" screen. Tap
+   **Join this game**, allow the camera and microphone, and it shows a reply
+   code.
+3. Back on the **host**, tap **Scan their reply** and point the phone at
+   that reply code.
 
 That's the whole handshake — after it the two phones talk to each other
 directly (WebRTC), with no server and no account. The **host's** camera and
@@ -284,16 +289,31 @@ own camera is there for the guest to watch their end and use for manual
 corrections, which route to the host and apply to the one shared game.
 Point A / Point B / Let / Fault / Undo work from either phone.
 
-Pairing needs both phones to actually see each other's screens once each way
-(to scan the QR codes) — after that they can be repositioned anywhere on the
-same Wi-Fi, or even different networks (a public STUN server helps them find
-each other, though very restrictive networks can still block it). If the
-connection drops, re-pair from the same panel.
+**The two codes aren't scanned the same way, on purpose.** The host's
+invite is a real, clickable URL — any camera app can read it, because
+opening it is just opening a web page. The guest's reply is not a link: the
+host's page has a live connection object in memory at that point, and
+opening a link would load a fresh page that knows nothing about it. So that
+second code is read through the app's own full-screen scanner (the button
+labelled **Scan their reply**), not the phone's regular camera app. An
+earlier version encoded both codes as plain data, which is what made some
+phones' camera apps try to web-search the first code instead of opening it —
+that's fixed now that it's an actual link.
 
-This is new and the honest caveat is: I can generate and exchange the pairing
-codes and prove the data channel works, but I can't test two real phones
-scanning each other's screens from here — if the QR scan itself is fiddly on
-your hardware, tell me what you see and I'll tighten it.
+Pairing needs both phones to see each other's screens once each way — after
+that they can be repositioned anywhere on the same Wi-Fi, or even different
+networks (a public STUN server helps them find each other, though very
+restrictive networks can still block it). If the connection drops, re-pair
+from the same panel.
+
+I've verified the whole flow end to end — a host's QR decodes to a real,
+well-formed URL with the invite code in it; opening that URL shows the
+dedicated join screen and cleans the address bar; tapping Join starts the
+camera and produces a reply code; and the host accepting that reply brings
+both phones to a connected, score-sharing state. What I can't do from here is
+hold two physical phones and scan one's screen with the other's camera, so if
+anything about pointing a real phone at a real code feels off, tell me
+exactly what you see.
 
 ## What it gets right, and what it won't
 

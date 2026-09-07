@@ -238,3 +238,17 @@ input[type=range]{width:100%;height:34px;accent-color:var(--a)}
 #syncStatus.on{color:var(--ok);border-color:#1c4a2a}
 #syncStatus.off{color:var(--bad);border-color:#4a1f1c}
 .pill.peer{position:fixed;top:calc(10px + var(--safe-t));left:50%;transform:translateX(-50%);z-index:20}
+
+/* --- full-screen overlays: scanner and join-landing --- */
+.full-overlay{position:fixed;inset:0;z-index:50;background:#04070c;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:calc(16px + var(--safe-t)) 16px calc(16px + var(--safe-b))}
+.scan-video-wrap{position:absolute;inset:0;overflow:hidden}
+.scan-video-wrap video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.scan-frame{position:absolute;inset:14%;bottom:32%;border:3px solid var(--a);border-radius:14px;
+  box-shadow:0 0 0 100vmax rgba(0,0,0,.45)}
+.overlay-card{position:relative;z-index:2;max-width:420px;width:100%;
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:20px;text-align:center;display:flex;flex-direction:column;gap:10px;align-items:center}
+.overlay-title{font-size:18px;font-weight:700;line-height:1.3}
+#scanOverlay .overlay-card{margin-top:auto}

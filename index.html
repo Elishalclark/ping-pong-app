@@ -62,6 +62,33 @@
       </div>
       <div id="rotateHint" class="rotate-hint" hidden>Turn the phone sideways for a better view of the table</div>
       <div id="flash" class="flash" hidden></div>
+
+      <div id="scanOverlay" class="full-overlay" hidden>
+        <div class="scan-video-wrap">
+          <video id="scanVideo" playsinline muted></video>
+          <div class="scan-frame"></div>
+        </div>
+        <div class="overlay-card">
+          <div id="scanOverlayTitle" class="overlay-title">Point the camera at the other phone's code</div>
+          <div id="scanOverlayHint" class="note">Keep both screens well lit and steady.</div>
+          <button id="btnScanCancel" class="big wide">Cancel</button>
+        </div>
+      </div>
+
+      <div id="joinOverlay" class="full-overlay" hidden>
+        <div class="overlay-card">
+          <div class="overlay-title" id="joinTitle">You've been invited to referee a match</div>
+          <p class="note" id="joinBody">
+            Someone started a game on their phone and wants this phone to join as the
+            second camera. Tap Join, allow the camera and microphone, and you'll get a
+            code to show back to them.
+          </p>
+          <button id="btnJoinAccept" class="big primary wide">Join this game</button>
+          <button id="btnJoinDecline" class="link">not now</button>
+          <div id="joinProgress" class="note" hidden></div>
+          <div id="joinQrBox" class="qrbox" hidden></div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -111,17 +138,13 @@
     <p class="note" style="margin-top:0">Use two phones for both angles — one score shared between them. Either phone can make calls.</p>
     <div class="controls tight" id="syncButtons">
       <button id="btnHost">Host on this phone</button>
-      <button id="btnJoin">Join with a QR</button>
+      <button id="btnJoin">I have a code to enter</button>
     </div>
     <div id="syncPanel" hidden>
       <div id="syncStep" class="note"></div>
       <div id="qrBox" class="qrbox" hidden></div>
-      <div class="video-wrap scanwrap" id="scanWrap" hidden>
-        <video id="scanVideo" playsinline muted></video>
-        <div class="scan-frame"></div>
-      </div>
       <div class="controls tight">
-        <button id="btnSyncNext" hidden></button>
+        <button id="btnSyncScan" hidden></button>
         <button id="btnSyncCancel" class="link">cancel</button>
       </div>
       <div id="syncStatus" class="pill" hidden>not connected</div>

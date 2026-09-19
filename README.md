@@ -219,13 +219,18 @@ The two sensors answer different questions, and neither is trusted alone.
   smooth and on-colour are necessary evidence that something is the ball, but
   they aren't sufficient on their own over a longer stretch — a ceiling fan,
   a swinging arm, or a reflection can satisfy all three by coincidence for a
-  while. A real rally bounces constantly: every serve, every return, every
-  shot lands within well under a second. So a track that has been confirmed
-  for more than about two seconds without ever actually touching the table
-  down (not just moving fast nearby — landing on it) is dropped and left to
-  re-acquire cleanly, the same as if it had been lost outright. A track that
-  keeps genuinely bouncing is never touched by this, no matter how long the
-  rally runs.
+  while. So a track that has been confirmed for a good few seconds without
+  ever actually touching down somewhere plausibly near the table (not the
+  tight calibrated quad itself — real calibration is routinely a little off,
+  especially at a far corner, and requiring a bounce to land exactly inside
+  it dropped genuinely bouncing rallies whenever a bounce happened to land
+  near an imprecise edge) is dropped and left to re-acquire cleanly, the same
+  as if it had been lost outright. The window is generous on purpose: a
+  track can confirm mid-flight rather than right at a bounce, and reading a
+  bounce off the smoothed velocity lags the real thing by a few frames, so a
+  short timeout was cutting off tracks that were, in fact, bouncing normally.
+  A track that keeps genuinely bouncing is never touched by this, no matter
+  how long the rally runs.
 - **A motion filter turns detections into a track.** Rather than snapping to
   wherever the detector fires each frame, positions feed a constant-velocity
   (alpha-beta) filter that estimates where the ball is *and how fast it is
@@ -497,6 +502,14 @@ Honest limits, because an umpire that hides them is worse than no umpire:
   to correct calls.
 - **It does not judge service legality** — throw height, open palm, ball behind
   the end line. Those need a calibrated view a single webcam doesn't give.
+- **The marker briefly blinks off at every real bounce.** A reversal is read
+  as a genuine change of direction, not a resumed guess, so the track has to
+  re-earn confirmation in a handful of frames rather than being trusted
+  instantly — the same caution that keeps a random stray blob from hijacking
+  the track in the first place. That costs a beat of visible marker at every
+  single bounce, which is expected, not a dropped ball; scoring itself does
+  not depend on the marker being drawn, only on the tracker's own position
+  history, which keeps recording through that beat.
 
 Treat it as an assistant that catches the routine calls and keeps score
 reliably, with a human ready on the override buttons for the close ones. It is

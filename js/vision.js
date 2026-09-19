@@ -31,12 +31,24 @@ const LOST_TENTATIVE = 140;   // an unconfirmed track dies fast
 const REACQUIRE_MS = 120;     // after this long coasting, a far blob re-acquires
 const BOUNCE_VY = 0.35;       // filtered vertical speed either side of a bounce
 // A real rally bounces far more often than this — every serve, every return,
-// every shot crosses the net and lands within well under a second. A track
+// every shot crosses the net and lands well under a second later. A track
 // that stays "confirmed" (fast, smooth, on-colour) for this long without
 // ever actually touching the table down is more likely a false lock — a
 // swinging arm, a ceiling fan, a light flicker — that happens to pass the
 // motion gates on its own than a ball that is somehow never bouncing.
-const NO_BOUNCE_TIMEOUT = 2200;
+//
+// This needs real headroom, not just one shot's flight time: confirmation
+// itself takes a handful of frames, a track can confirm mid-flight rather
+// than right at a bounce, and the vy-reversal detector reads off the
+// SMOOTHED velocity, which lags a genuine bounce by a few frames. Measured
+// against a realistic simulated rally (occasional occlusion right at
+// contact, bounces landing close to imprecisely-calibrated edges), the
+// stretch from confirmation to the first detected bounce alone came out
+// close to 2 seconds — a shorter timeout dropped a track that was, in fact,
+// bouncing normally, before it had a fair chance to prove it. A false lock
+// that never bounces at all runs far longer than this either way, so the
+// extra headroom costs nothing against what this is actually meant to catch.
+const NO_BOUNCE_TIMEOUT = 4500;
 const MIN_BALL_SPEED = 0.5;   // frame-widths/second — the ball moves; a drifting arm barely does
 const BALLISTIC_MIN = 0.3;    // how smooth the recent path must be to count as physical motion
 // A blob smaller than this has no measurable shape and cannot be told from
@@ -231,7 +243,20 @@ export class VisionReferee {
   _loop = () => {
     if (!this._running) return;
     this._watchdog(performance.now());
-    if (this.video.readyState >= 2 && !this.video.paused) this._frame();
+    // requestAnimationFrame is only re-armed once this function returns, so
+    // an uncaught exception anywhere in a frame's processing — detection,
+    // the motion filter, the homography, drawing — would otherwise stop the
+    // whole loop permanently: no more tracking, no more marker, for the
+    // rest of the match, with no way back short of reloading. A single bad
+    // frame on real, messy camera input (one degenerate blob, one odd
+    // corner case) is far more likely than in any synthetic test, so this
+    // is not hypothetical. Catch it, log it, and keep going from the next
+    // frame — one skipped frame is invisible; a dead tracker isn't.
+    try {
+      if (this.video.readyState >= 2 && !this.video.paused) this._frame();
+    } catch (err) {
+      console.error('[vision] frame processing error (continuing):', err);
+    }
     requestAnimationFrame(this._loop);
   };
 
@@ -671,10 +696,16 @@ export class VisionReferee {
     // bounces and invented them from jitter.
     if (confirmed && prev.vy > BOUNCE_VY && vy < -BOUNCE_VY * 0.4) {
       const onTable = this.isOnTable({ x, y });
-      // Only a touch on the actual table is evidence the tracker is
-      // following something real — a reversal in mid-air (off the table)
-      // proves nothing either way, so it doesn't reset the clock.
-      if (onTable) this._lastTableBounceAt = t;
+      // A reversal anywhere within the generous out-of-bounds boundary — not
+      // strictly inside the tight table quad — is enough to reset the
+      // no-bounce clock. The quad itself is only ever as good as how the
+      // table was calibrated, and real calibration is routinely a little
+      // off, especially at a far corner; requiring a bounce to land exactly
+      // inside it made the very fix meant to drop false locks instead drop
+      // genuine, actively bouncing rallies whenever a bounce landed near an
+      // imprecise edge. The boundary sits well past the table on purpose, so
+      // this still can't be satisfied by an arm waving across the room.
+      if (this.isInsideBoundary({ x, y })) this._lastTableBounceAt = t;
       this.onBallBounce({ x, y, t, side: this.sideOf({ x, y }), onTable });
     }
 

@@ -937,14 +937,14 @@ test('a fast, smooth track that never bounces on the table eventually loses its 
   // stay locked for a while (a freshly confirmed track deserves a chance)...
   const confirmedAt = t;
   let droppedAt = null;
-  for (let i = 0; i < 250; i++) {
+  for (let i = 0; i < 400; i++) {
     t += 16; x += 0.02;
     v._updateTrack({ x, y, conf: 1, t }, t);
     if (droppedAt === null && !v.isLocked) droppedAt = t;
   }
   assert.ok(droppedAt !== null,
     'a track with no table contact for a long stretch should eventually lose its lock');
-  assert.ok(droppedAt - confirmedAt > 1500 && droppedAt - confirmedAt < 3000,
+  assert.ok(droppedAt - confirmedAt > 3500 && droppedAt - confirmedAt < 5500,
     `should drop roughly around the no-bounce timeout, not immediately or never (dropped after ${droppedAt - confirmedAt}ms)`);
 });
 

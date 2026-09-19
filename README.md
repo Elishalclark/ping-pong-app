@@ -215,6 +215,17 @@ The two sensors answer different questions, and neither is trusted alone.
   rather than "ball ●" (locked) — an honest blank beats a marker flailing
   around the room. This trades some missed tracking for not chasing arms,
   shadows and shirts.
+- **A lock that never actually touches the table gives itself up.** Fast,
+  smooth and on-colour are necessary evidence that something is the ball, but
+  they aren't sufficient on their own over a longer stretch — a ceiling fan,
+  a swinging arm, or a reflection can satisfy all three by coincidence for a
+  while. A real rally bounces constantly: every serve, every return, every
+  shot lands within well under a second. So a track that has been confirmed
+  for more than about two seconds without ever actually touching the table
+  down (not just moving fast nearby — landing on it) is dropped and left to
+  re-acquire cleanly, the same as if it had been lost outright. A track that
+  keeps genuinely bouncing is never touched by this, no matter how long the
+  rally runs.
 - **A motion filter turns detections into a track.** Rather than snapping to
   wherever the detector fires each frame, positions feed a constant-velocity
   (alpha-beta) filter that estimates where the ball is *and how fast it is

@@ -919,3 +919,52 @@ test('a path that stays in one half predicts no net crossing', () => {
   const contact = v.predictedContact();
   if (contact) assert.equal(contact.netCross, null, 'should not predict a net crossing far from the net');
 });
+
+// --- a track that never actually touches the table loses its lock ---------
+
+test('a fast, smooth track that never bounces on the table eventually loses its lock', () => {
+  const v = make();
+  let x = 0.3, y = 0.5, t = 1000;
+  // Establish a confirmed track: fast, straight, horizontal — never a
+  // vertical reversal, so it never registers as touching the table.
+  for (let i = 0; i < 6; i++) {
+    t += 16; x += 0.02;
+    v._updateTrack({ x, y, conf: 1, t }, t);
+  }
+  assert.equal(v.isLocked, true, 'should be locked after a smooth fast run');
+
+  // Keep feeding equally fast, smooth, never-bouncing detections. It should
+  // stay locked for a while (a freshly confirmed track deserves a chance)...
+  const confirmedAt = t;
+  let droppedAt = null;
+  for (let i = 0; i < 250; i++) {
+    t += 16; x += 0.02;
+    v._updateTrack({ x, y, conf: 1, t }, t);
+    if (droppedAt === null && !v.isLocked) droppedAt = t;
+  }
+  assert.ok(droppedAt !== null,
+    'a track with no table contact for a long stretch should eventually lose its lock');
+  assert.ok(droppedAt - confirmedAt > 1500 && droppedAt - confirmedAt < 3000,
+    `should drop roughly around the no-bounce timeout, not immediately or never (dropped after ${droppedAt - confirmedAt}ms)`);
+});
+
+test('a track that bounces on the table regularly keeps its lock indefinitely', () => {
+  const v = make();
+  let t = 1000;
+  // A ball bouncing back and forth across the table: vy alternates sign on
+  // every bounce, each one on the table, well within the no-bounce timeout.
+  let x = 0.3, y = 0.5, vyDir = 1;
+  for (let i = 0; i < 6; i++) {
+    t += 16; x += 0.02; y += 0.01 * vyDir;
+    v._updateTrack({ x, y, conf: 1, t }, t);
+  }
+  assert.equal(v.isLocked, true);
+  for (let bounce = 0; bounce < 6; bounce++) {
+    // Fly one way (say, downward) for a few frames...
+    for (let i = 0; i < 8; i++) { t += 16; x += 0.015; y += 0.012; v._updateTrack({ x, y, conf: 1, t }, t); }
+    // ...then reverse sharply (a bounce), staying on the table (x, y in 0..1).
+    for (let i = 0; i < 8; i++) { t += 16; x += 0.015; y -= 0.012; v._updateTrack({ x, y, conf: 1, t }, t); }
+  }
+  assert.equal(v.isLocked, true,
+    'a track that keeps genuinely bouncing on the table should never be dropped for lack of contact');
+});

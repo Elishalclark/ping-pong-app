@@ -30,6 +30,13 @@ const LOST_CONFIRMED = 420;   // ms of no detection before a real track dies
 const LOST_TENTATIVE = 140;   // an unconfirmed track dies fast
 const REACQUIRE_MS = 120;     // after this long coasting, a far blob re-acquires
 const BOUNCE_VY = 0.35;       // filtered vertical speed either side of a bounce
+// A real rally bounces far more often than this — every serve, every return,
+// every shot crosses the net and lands within well under a second. A track
+// that stays "confirmed" (fast, smooth, on-colour) for this long without
+// ever actually touching the table down is more likely a false lock — a
+// swinging arm, a ceiling fan, a light flicker — that happens to pass the
+// motion gates on its own than a ball that is somehow never bouncing.
+const NO_BOUNCE_TIMEOUT = 2200;
 const MIN_BALL_SPEED = 0.5;   // frame-widths/second — the ball moves; a drifting arm barely does
 const BALLISTIC_MIN = 0.3;    // how smooth the recent path must be to count as physical motion
 // A blob smaller than this has no measurable shape and cannot be told from
@@ -101,6 +108,7 @@ export class VisionReferee {
     this.onBallBounce = () => {};   // visual bounce (vertical direction reversal)
     this.onLost = () => {};
     this._lastSeen = 0;
+    this._lastTableBounceAt = 0;   // last time a CONFIRMED track actually hit the table
     this._running = false;
     this._frames = 0;
     this._fpsAt = performance.now();
@@ -477,6 +485,21 @@ export class VisionReferee {
   }
 
   _updateTrack(found, t) {
+    // A track that's stayed "confirmed" — fast, smooth, on-colour — for a
+    // long stretch without ever actually touching the table down is more
+    // likely a false lock than a ball that is somehow never bouncing; drop
+    // it and let it re-acquire cleanly. Only judged once a table is
+    // calibrated — with no table there is no "on the table" to check a
+    // bounce against, so this would otherwise kill every track by default.
+    if (this.table && this.track?.confirmed && t - this._lastTableBounceAt > NO_BOUNCE_TIMEOUT) {
+      const prev = this.track;
+      this.track = null;
+      this.trail.length = 0;
+      this._rejectStreak = 0;
+      this._lastReject = null;
+      this.ballTemplate = null;
+      this.onLost(prev);
+    }
     if (found && this._accept(found, t)) {
       // The detection is where the ball was predicted to be: filter it in.
       this._rejectStreak = 0;
@@ -634,15 +657,25 @@ export class VisionReferee {
     const confirmed = prev.confirmed ||
       (hits >= this._confirm && fastEnough && ballistic >= this._ballisticMin);
     // The frame a track first confirms, adopt the ball's own colour as the
-    // template so later frames track this specific ball, not a generic preset.
-    if (confirmed && !prev.confirmed && m.color) this.ballTemplate = { ...m.color };
+    // template so later frames track this specific ball, not a generic preset,
+    // and start the no-bounce clock — a freshly confirmed track hasn't had a
+    // chance to bounce yet, so it shouldn't be judged as if it had.
+    if (confirmed && !prev.confirmed) {
+      if (m.color) this.ballTemplate = { ...m.color };
+      this._lastTableBounceAt = t;
+    }
 
     // A bounce is the ball's downward motion reversing to upward. Reading it
     // from the smoothed velocity, with clear thresholds either side, is far
     // steadier than the old single-frame sign test, which both missed real
     // bounces and invented them from jitter.
     if (confirmed && prev.vy > BOUNCE_VY && vy < -BOUNCE_VY * 0.4) {
-      this.onBallBounce({ x, y, t, side: this.sideOf({ x, y }), onTable: this.isOnTable({ x, y }) });
+      const onTable = this.isOnTable({ x, y });
+      // Only a touch on the actual table is evidence the tracker is
+      // following something real — a reversal in mid-air (off the table)
+      // proves nothing either way, so it doesn't reset the clock.
+      if (onTable) this._lastTableBounceAt = t;
+      this.onBallBounce({ x, y, t, side: this.sideOf({ x, y }), onTable });
     }
 
     const conf = (m.conf ?? prev.conf) * (0.5 + 0.5 * ballistic);
